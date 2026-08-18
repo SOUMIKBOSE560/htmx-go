@@ -1,0 +1,24 @@
+{{define "register"}}{{template "base" .}}{{end}}
+
+{{define "content"}}
+<div class="auth-wrap">
+  <div class="auth-card">
+    <div class="auth-head">
+      <h1>Create your account</h1>
+      <p>Track books, ratings, reviews and yearly reading goals.</p>
+    </div>
+    {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+    <form method="post" action="/register">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <label>Email
+        <input type="email" name="email" value="{{.Email}}" required autofocus autocomplete="email">
+      </label>
+      <label>Password
+        <input type="password" name="password" required minlength="8" autocomplete="new-password">
+      </label>
+      <button class="btn btn-primary btn-block" type="submit">Sign Up</button>
+    </form>
+    <p class="auth-alt">Already have an account? <a href="/login">Log In</a></p>
+  </div>
+</div>
+{{end}}

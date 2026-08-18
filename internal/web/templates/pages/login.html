@@ -1,0 +1,24 @@
+{{define "login"}}{{template "base" .}}{{end}}
+
+{{define "content"}}
+<div class="auth-wrap">
+  <div class="auth-card">
+    <div class="auth-head">
+      <h1>Welcome back</h1>
+      <p>Log in to your library.</p>
+    </div>
+    {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+    <form method="post" action="/login">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <label>Email
+        <input type="email" name="email" value="{{.Email}}" required autofocus autocomplete="email">
+      </label>
+      <label>Password
+        <input type="password" name="password" required autocomplete="current-password">
+      </label>
+      <button class="btn btn-primary btn-block" type="submit">Log In</button>
+    </form>
+    <p class="auth-alt">New here? <a href="/register">Create an account</a></p>
+  </div>
+</div>
+{{end}}

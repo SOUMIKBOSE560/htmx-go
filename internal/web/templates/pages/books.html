@@ -1,0 +1,37 @@
+{{define "books"}}{{template "base" .}}{{end}}
+
+{{define "content"}}
+<section class="welcome welcome-compact">
+  <div>
+    <h1>My Library</h1>
+    <p class="sub">Search, add and manage every book you've read or want to read.</p>
+  </div>
+  <div class="welcome-stat">
+    <span class="welcome-stat-num">{{.Stats.Total}}</span>
+    <span class="welcome-stat-label">Total books</span>
+  </div>
+</section>
+
+{{template "stats_bar" .}}
+
+<div class="markets-card">
+  {{template "book_form" .}}
+</div>
+
+<div class="markets-card">
+  <div class="toolbar">
+    <form id="search-form" class="search-form" hx-get="/books/search"
+          hx-trigger="input delay:400ms, change"
+          hx-target="#book-list" hx-swap="innerHTML">
+      <input type="search" name="q" value="{{.Search}}" placeholder="Search title or author…" aria-label="Search books">
+      <select name="status" aria-label="Filter by status">
+        <option value="" {{if eq .Status ""}}selected{{end}}>All statuses</option>
+        <option value="to_read" {{if eq .Status "to_read"}}selected{{end}}>To read</option>
+        <option value="reading" {{if eq .Status "reading"}}selected{{end}}>Reading</option>
+        <option value="finished" {{if eq .Status "finished"}}selected{{end}}>Finished</option>
+      </select>
+    </form>
+  </div>
+  <div id="book-list" class="book-list">{{template "book_list" .}}</div>
+</div>
+{{end}}

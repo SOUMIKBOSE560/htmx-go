@@ -1,0 +1,121 @@
+{{define "base"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="{{if .Light}}#ffffff{{else}}#0b0e11{{end}}">
+<title>Pageturner — book review &amp; reading tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Sans:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/htmx.min.js" defer></script>
+<script src="/static/logs.js" defer></script>
+<script src="/static/app.js" defer></script>
+</head>
+<body class="{{if .Light}}page-light{{end}}" hx-headers='{"X-CSRF-Token": "{{.CSRF}}"}'>
+<header class="topnav">
+  <div class="topnav-inner">
+    <button class="nav-burger" id="nav-burger" type="button" aria-label="Toggle menu" aria-expanded="false">
+      <span></span><span></span><span></span>
+    </button>
+    <a class="brand" href="{{if .User.ID}}/{{else}}/login{{end}}">
+      <span class="brand-mark">PT</span>
+      PAGETURNER
+    </a>
+    <div class="nav-sheet" id="nav-sheet">
+      {{if .User.ID}}
+      <nav class="nav-menu" aria-label="Primary">
+        <a class="nav-link" href="/">Dashboard</a>
+        <a class="nav-link" href="/books">My Library</a>
+      </nav>
+      {{end}}
+      <div class="nav-actions">
+        {{if .User.ID}}
+        <span class="nav-email">{{.User.Email}}</span>
+        <button class="btn btn-secondary btn-sm" type="button" id="logs-toggle">Logs</button>
+        <form method="post" action="/logout" class="inline">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <button class="btn btn-secondary btn-sm" type="submit">Log out</button>
+        </form>
+        {{else}}
+        <a class="nav-link nav-login" href="/login">Log In</a>
+        <a class="btn btn-primary btn-pill" href="/register">Sign Up</a>
+        {{end}}
+      </div>
+    </div>
+  </div>
+</header>
+<main class="page">
+  <div class="container">
+  {{block "content" .}}{{end}}
+  </div>
+</main>
+<div id="logs-modal" class="logs-modal" hidden>
+  <div class="logs-modal-card">
+    <div class="logs-terminal-header">
+      <span class="terminal-dot red"></span>
+      <span class="terminal-dot yellow"></span>
+      <span class="terminal-dot green"></span>
+      <span class="terminal-title">pageturner — backend logs</span>
+      <span id="logs-status" class="logs-status" style="margin-left:auto;">connecting…</span>
+      <button class="btn btn-secondary btn-sm" type="button" id="logs-close">Close</button>
+    </div>
+    <div id="logs-terminal" class="logs-terminal" aria-live="polite" role="log"></div>
+  </div>
+</div>
+<footer class="footer">
+  <div class="footer-inner">
+    <div class="footer-grid">
+      <div class="footer-col footer-brand">
+        <div class="footer-brand-row">
+          <span class="brand-mark">PT</span>
+          <span class="footer-brand-name">PAGETURNER</span>
+        </div>
+        <p class="footer-tagline">Your reading year at a glance. Server-rendered with Go, HTMX and Postgres.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Platform</h4>
+        {{if .User.ID}}
+        <a href="/">Dashboard</a>
+        <a href="/books">My Library</a>
+        {{else}}
+        <a href="/login">Log In</a>
+        <a href="/register">Sign Up</a>
+        {{end}}
+      </div>
+      <div class="footer-col">
+        <h4>Shelves</h4>
+        <a href="/books?status=to_read">To Read</a>
+        <a href="/books?status=reading">Reading</a>
+        <a href="/books?status=finished">Finished</a>
+      </div>
+      <div class="footer-col">
+        <h4>Account</h4>
+        {{if .User.ID}}
+        <a href="/">Reading Goal</a>
+        <form method="post" action="/logout" class="inline">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <button class="footer-link-btn" type="submit">Log Out</button>
+        </form>
+        {{else}}
+        <a href="/register">Create Account</a>
+        <a href="/login">Sign In</a>
+        {{end}}
+      </div>
+      <div class="footer-col">
+        <h4>Status</h4>
+        <a href="/healthz">System health</a>
+        <span>Go + HTMX</span>
+        <span>PostgreSQL</span>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <span>© 2026 Pageturner. All rights reserved.</span>
+      <span>Your shelf is safe with us.</span>
+    </div>
+  </div>
+</footer>
+</body>
+</html>
+{{end}}

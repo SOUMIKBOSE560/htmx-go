@@ -1,0 +1,113 @@
+{{/* Book list rendered inside #book-list */}}
+{{define "book_list"}}
+{{if .Books}}
+  {{range .Books}}
+  <article class="book-row" id="book-{{.ID}}">
+    <div id="book-body-{{.ID}}">
+      {{template "book_body" .}}
+    </div>
+  </article>
+  {{end}}
+{{else}}
+<div class="empty-state">
+  <p>No books here yet.</p>
+  <p class="muted">Add your first one with the form above, or tweak your search.</p>
+</div>
+{{end}}
+{{end}}
+
+{{/* Response for POST /books: new card prepended + OOB stats refresh */}}
+{{define "book_card"}}
+<article class="book-row" id="book-{{.Book.ID}}">
+  <div id="book-body-{{.Book.ID}}">
+    {{template "book_body" .Book}}
+  </div>
+</article>
+<div id="stats-bar" hx-swap-oob="true" class="stats-grid">{{template "stats_inner" .}}</div>
+{{end}}
+
+{{/* The display view of one book. Dot is a models.Book. */}}
+{{define "book_body"}}
+<div class="book-main">
+  <span class="book-cover" aria-hidden="true"></span>
+  <div class="book-meta">
+    <h3 class="book-title">{{.Title}}</h3>
+    <p class="book-author">by {{.Author}}</p>
+  </div>
+</div>
+<div class="book-status">
+  <select name="status" class="status-select status-{{.Status}}" aria-label="Change status"
+          hx-patch="/books/{{.ID}}/status" hx-trigger="change">
+    <option value="to_read" {{if eq .Status "to_read"}}selected{{end}}>To read</option>
+    <option value="reading" {{if eq .Status "reading"}}selected{{end}}>Reading</option>
+    <option value="finished" {{if eq .Status "finished"}}selected{{end}}>Finished</option>
+  </select>
+</div>
+<div class="book-rating">
+  {{if .Stars}}<p class="rating" aria-label="Rating">{{.Stars}}</p>{{end}}
+  {{if .ReviewText}}<p class="review">“{{.ReviewText}}”</p>{{end}}
+  {{if .FinishedDate}}<p class="finished-date">Finished {{.FinishedDate}}</p>{{end}}
+</div>
+<div class="book-actions">
+  <button class="btn btn-secondary btn-sm" type="button" hx-get="/books/{{.ID}}/edit" hx-target="#book-body-{{.ID}}">Edit</button>
+  <button class="btn btn-danger btn-sm" type="button" hx-delete="/books/{{.ID}}"
+          hx-target="#book-{{.ID}}" hx-swap="outerHTML"
+          hx-confirm="Delete this book?">Delete</button>
+</div>
+{{end}}
+
+{{/* Response for PUT /books/{id} and PATCH status: refreshed body + OOB stats */}}
+{{define "book_body_and_stats"}}
+{{template "book_body" .Book}}
+<div id="stats-bar" hx-swap-oob="true" class="stats-grid">{{template "stats_inner" .}}</div>
+{{end}}
+
+{{/* Add-book form (also re-rendered in place on validation errors) */}}
+{{define "book_form"}}
+<form id="add-form" class="add-form" hx-post="/books"
+      hx-target="#book-list" hx-swap="afterbegin"
+      hx-on::after-request="if(event.detail.successful) this.reset()">
+  {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+  <div class="row add-row">
+    <input name="title" placeholder="Title" required aria-label="Title">
+    <input name="author" placeholder="Author" required aria-label="Author">
+    <select name="status" aria-label="Status">
+      <option value="to_read">To read</option>
+      <option value="reading">Reading</option>
+      <option value="finished">Finished</option>
+    </select>
+    <button class="btn btn-primary" type="submit">Add book</button>
+  </div>
+</form>
+{{end}}
+
+{{/* Inline edit form replacing the book body. Dot is pageData. */}}
+{{define "edit_form"}}
+<form class="edit-form" hx-put="/books/{{.Book.ID}}"
+      hx-target="#book-body-{{.Book.ID}}" hx-swap="innerHTML">
+  {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+  <div class="edit-grid">
+    <input name="title" value="{{.Book.Title}}" required aria-label="Title">
+    <input name="author" value="{{.Book.Author}}" required aria-label="Author">
+    <select name="status" aria-label="Status">
+      <option value="to_read" {{if eq .Book.Status "to_read"}}selected{{end}}>To read</option>
+      <option value="reading" {{if eq .Book.Status "reading"}}selected{{end}}>Reading</option>
+      <option value="finished" {{if eq .Book.Status "finished"}}selected{{end}}>Finished</option>
+    </select>
+    <select name="rating" aria-label="Rating">
+      <option value="" {{if eq .Book.RatingValue 0}}selected{{end}}>No rating</option>
+      <option value="1" {{if eq .Book.RatingValue 1}}selected{{end}}>1 ★</option>
+      <option value="2" {{if eq .Book.RatingValue 2}}selected{{end}}>2 ★</option>
+      <option value="3" {{if eq .Book.RatingValue 3}}selected{{end}}>3 ★</option>
+      <option value="4" {{if eq .Book.RatingValue 4}}selected{{end}}>4 ★</option>
+      <option value="5" {{if eq .Book.RatingValue 5}}selected{{end}}>5 ★</option>
+    </select>
+    <textarea name="review" rows="3" placeholder="Review (optional)" aria-label="Review">{{.Book.ReviewText}}</textarea>
+  </div>
+  <div class="row edit-actions">
+    <button class="btn btn-primary" type="submit">Save</button>
+    <button class="btn btn-secondary" type="button" hx-get="/books/{{.Book.ID}}"
+            hx-target="#book-body-{{.Book.ID}}">Cancel</button>
+  </div>
+</form>
+{{end}}

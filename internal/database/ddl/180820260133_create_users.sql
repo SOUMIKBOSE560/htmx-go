@@ -1,0 +1,13 @@
+-- Example DDL script — naming convention: DDMMYYYYHHMM_<name>.sql
+--   180820260133 = 18 Aug 2026, 01:33
+--
+-- On startup the app compares each script's timestamp against the
+-- last_synced marker (seeded to 180820260136 = 18 Aug 2026, 01:36) and only
+-- runs scripts NEWER than the marker. This file sits at/below the baseline,
+-- so it is treated as already applied and never executes — it exists purely
+-- to show the format.
+--
+-- To apply new schema changes: drop a file here named with the current
+-- day-month-year-hour-minute, e.g. 180820261530_add_reviews.sql, and it will
+-- run automatically on the next app start.
+SELECT 1;
