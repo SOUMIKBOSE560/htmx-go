@@ -20,7 +20,7 @@ type Config struct {
 func Load() Config {
 	cfg := Config{
 		Port:          getenv("PORT", "8080"),
-		DatabaseURL:   getenv("DATABASE_URL", "postgres://pageturner:pageturner@localhost:5433/pageturner?sslmode=disable"),
+		DatabaseURL:   getenv("DATABASE_URL", "file:data/pageturner.db?_busy_timeout=5000&_foreign_keys=on"),
 		SessionSecret: getenv("SESSION_SECRET", "dev-secret-change-me-in-production"),
 		SessionTTL:    durationEnv("SESSION_TTL", 168*time.Hour),
 		LogFormat:     getenv("LOG_FORMAT", "text"),

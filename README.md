@@ -1,6 +1,6 @@
 # 📖 Pageturner
 
-A production-ready **book review & reading tracker** built with **Go + HTMX + Postgres** — server-rendered, zero frontend framework, shipped as a single static binary.
+A production-ready **book review & reading tracker** built with **Go + HTMX + SQLite** — server-rendered, zero frontend framework, shipped as a single static binary.
 
 Inspired by the "Book Review and Reading Tracker App" idea (item #10) from [Fively's 2026 web app ideas](https://fively.dev/ideas/web-app-ideas/). It's Goodreads reimagined, built the hypermedia way.
 
@@ -15,22 +15,13 @@ Inspired by the "Book Review and Reading Tracker App" idea (item #10) from [Five
 - **Sync-on-the-fly DDL** — a `ddl/` folder of timestamped SQL scripts (`DDMMYYYYHHMM_name.sql`) is applied incrementally against a `last_synced` marker table on every boot; only scripts newer than the marker run
 - **Live backend logs** — a 📡 Logs button streams the server's log output into an overlay terminal over SSE (`GET /logs/stream`)
 
-## Quick start (Docker, no local Postgres needed)
+## Quick start (Docker)
 
 ```bash
-# 1. Start Postgres (Docker) — or use any existing Postgres
-docker compose up -d db
+# Start the app with a persistent SQLite volume
+docker compose up -d --build
 
-# 2. Run the app locally (auto-applies migrations)
-go run ./cmd/server
-
-# 3. Open http://localhost:8080 and create an account
-```
-
-Or run the whole stack in Docker:
-
-```bash
-docker compose up -d --build   # db + app
+# Open http://localhost:8080 and create an account
 ```
 
 To rebuild just the app image (e.g. after pulling code changes) and restart it:
@@ -42,8 +33,7 @@ docker compose up -d --build app
 ## Local development
 
 ```bash
-make db-up     # Postgres in Docker on host port :5433 (avoids colliding with a local Postgres on 5432)
-make run       # go run ./cmd/server (migrations run automatically)
+docker compose up -d --build
 make test      # unit + integration tests
 make vet       # go vet ./...
 ```
@@ -53,14 +43,14 @@ make vet       # go vet ./...
 The data-layer integration test runs only when `TEST_DATABASE_URL` is set:
 
 ```bash
-TEST_DATABASE_URL=postgres://pageturner:pageturner@localhost:5433/pageturner?sslmode=disable go test ./...
+TEST_DATABASE_URL="file::memory:?cache=shared" go test ./...
 ```
 
 ## Configuration (environment variables)
 
 | Variable        | Default                                                          | Description                                  |
 |-----------------|------------------------------------------------------------------|----------------------------------------------|
-| `DATABASE_URL`  | `postgres://pageturner:pageturner@localhost:5433/pageturner?...` | Postgres connection string (5433 avoids colliding with a local Postgres on 5432) |
+| `DATABASE_URL`  | `file:data/pageturner.db?...` | SQLite database path |
 | `PORT`          | `8080`                                                           | HTTP listen port                             |
 | `SESSION_SECRET`| dev placeholder (warns)                                         | **Set a long random value in production**    |
 | `SESSION_TTL`   | `168h`                                                           | Session lifetime                             |
@@ -75,7 +65,7 @@ See [.env.example](.env.example).
 cmd/server/                 entrypoint: config, logging, DB, migrations, graceful shutdown
 internal/
   config/                   env-based configuration
-  database/                 pgx pool + embedded migration runner (advisory-locked)
+  database/                 SQLite connection + embedded migration runner
                              + DDL sync runner (timestamped ddl/ scripts vs last_synced marker)
   models/                   data access layer (users, sessions, books, goals, stats)
   auth/                     bcrypt, session tokens, CSRF helpers
@@ -96,5 +86,5 @@ Key design points:
 
 1. Set a strong `SESSION_SECRET` and `COOKIE_SECURE=true` behind TLS.
 2. Run with `LOG_FORMAT=json` for structured logging.
-3. Deploy the container from `docker compose build app`; scale horizontally by adding replicas behind a load balancer (the web tier is stateless — sessions live in Postgres).
+3. Deploy the container from `docker compose build app`; SQLite is persisted in the `sqlite-data` Docker volume.
 4. Point `/healthz` at your orchestrator's health check.

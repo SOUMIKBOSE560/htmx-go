@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -11,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	_ "modernc.org/sqlite"
 
 	"pageturner/internal/config"
 	"pageturner/internal/database"
@@ -25,22 +26,18 @@ func testLogger() *slog.Logger {
 
 // TestHealthUnreachable verifies /healthz reports 503 when the DB is down,
 // which exercises the wiring without needing a live database. The pool is
-// built directly (pgxpool defers connecting) to simulate a broken backend.
+// built directly against a missing read-only path to simulate a broken backend.
 func TestHealthUnreachable(t *testing.T) {
 	cfg := config.Load()
-	cfg.DatabaseURL = "postgres://nobody:nothing@127.0.0.1:1/nope?sslmode=disable&connect_timeout=1"
+	cfg.DatabaseURL = "file:/path-that-does-not-exist/pageturner.db?mode=ro"
 
-	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	db, err := sql.Open("sqlite", cfg.DatabaseURL)
 	if err != nil {
-		t.Fatalf("parse dsn: %v", err)
+		t.Fatalf("open database: %v", err)
 	}
-	pool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
-	if err != nil {
-		t.Fatalf("create pool: %v", err)
-	}
-	defer pool.Close()
+	defer db.Close()
 
-	srv := NewServer(cfg, models.NewStore(pool), testLogger(), logs.NewHub(200))
+	srv := NewServer(cfg, models.NewStore(db), testLogger(), logs.NewHub(200))
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
@@ -85,7 +82,7 @@ func TestLoginPageRenders(t *testing.T) {
 // TestFullFlow is a DB-backed integration test of the data layer, mirroring the
 // real user journey. It runs only when TEST_DATABASE_URL is set, e.g.:
 //
-//	TEST_DATABASE_URL=postgres://pageturner:pageturner@localhost:5432/pageturner?sslmode=disable go test ./...
+//	TEST_DATABASE_URL="file::memory:?cache=shared" go test ./...
 func TestFullFlow(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
@@ -179,23 +176,18 @@ func TestFullFlow(t *testing.T) {
 // form rejecting resubmits with "invalid CSRF token": after a validation error
 // the re-rendered form must keep the token in its hidden field, otherwise the
 // next submit no longer matches the cookie. The public-route flow never touches
-// the database, so the pool is built lazily against an unreachable host (pgx
-// defers connecting).
+// the database, so the database is opened against an unreachable path.
 func TestRegisterCSFTSurvivesValidationError(t *testing.T) {
 	cfg := config.Load()
-	cfg.DatabaseURL = "postgres://nobody:nothing@127.0.0.1:1/nope?sslmode=disable&connect_timeout=1"
+	cfg.DatabaseURL = "file:/path-that-does-not-exist/pageturner.db?mode=ro"
 
-	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	db, err := sql.Open("sqlite", cfg.DatabaseURL)
 	if err != nil {
-		t.Fatalf("parse dsn: %v", err)
+		t.Fatalf("open database: %v", err)
 	}
-	pool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
-	if err != nil {
-		t.Fatalf("create pool: %v", err)
-	}
-	defer pool.Close()
+	defer db.Close()
 
-	srv := NewServer(cfg, models.NewStore(pool), testLogger(), logs.NewHub(200))
+	srv := NewServer(cfg, models.NewStore(db), testLogger(), logs.NewHub(200))
 
 	// GET /register: the cookie and the form's hidden field must match.
 	get := httptest.NewRequest(http.MethodGet, "/register", nil)

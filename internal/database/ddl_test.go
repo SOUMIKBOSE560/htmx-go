@@ -16,14 +16,14 @@ func TestSyncDDL(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	pool, err := Connect(ctx, dsn)
+	db, err := Connect(ctx, dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer pool.Close()
+	defer db.Close()
 
 	// Ensure the table is created fresh so the seed assertion is meaningful.
-	if _, err := pool.Exec(ctx, `DROP TABLE IF EXISTS last_synced`); err != nil {
+	if _, err := db.ExecContext(ctx, `DROP TABLE IF EXISTS last_synced`); err != nil {
 		t.Fatalf("drop last_synced: %v", err)
 	}
 
@@ -32,7 +32,7 @@ func TestSyncDDL(t *testing.T) {
 	}
 
 	var syncedAt int64
-	if err := pool.QueryRow(ctx, `SELECT synced_at FROM last_synced WHERE id = 1`).Scan(&syncedAt); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT synced_at FROM last_synced WHERE id = 1`).Scan(&syncedAt); err != nil {
 		t.Fatalf("read last_synced: %v", err)
 	}
 	if syncedAt != initialLastSynced {
@@ -44,7 +44,7 @@ func TestSyncDDL(t *testing.T) {
 		t.Fatalf("SyncDDL (second run, should be idempotent): %v", err)
 	}
 	var again int64
-	if err := pool.QueryRow(ctx, `SELECT synced_at FROM last_synced WHERE id = 1`).Scan(&again); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT synced_at FROM last_synced WHERE id = 1`).Scan(&again); err != nil {
 		t.Fatalf("re-read last_synced: %v", err)
 	}
 	if again != syncedAt {

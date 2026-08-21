@@ -2,12 +2,11 @@ package models
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // ErrNotFound is returned when a requested row does not exist.
@@ -128,21 +127,21 @@ func (s Stats) Progress() int {
 
 // Store wraps all data access for the app.
 type Store struct {
-	pool *pgxpool.Pool
+	db *sql.DB
 }
 
-func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
+func NewStore(db *sql.DB) *Store { return &Store{db: db} }
 
 // Ping verifies database connectivity.
 func (s *Store) Ping(ctx context.Context) error {
-	return s.pool.Ping(ctx)
+	return s.db.PingContext(ctx)
 }
 
 // --- Users ---
 
 func (s *Store) CreateUser(ctx context.Context, email, passwordHash string) (User, error) {
 	var u User
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRowContext(ctx,
 		`INSERT INTO users (email, password_hash) VALUES ($1, $2)
 		 RETURNING id, email, password_hash, created_at`,
 		email, passwordHash).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt)
@@ -151,10 +150,10 @@ func (s *Store) CreateUser(ctx context.Context, email, passwordHash string) (Use
 
 func (s *Store) UserByEmail(ctx context.Context, email string) (User, error) {
 	var u User
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRowContext(ctx,
 		`SELECT id, email, password_hash, created_at FROM users WHERE email = $1`,
 		email).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
 	return u, err
@@ -162,10 +161,10 @@ func (s *Store) UserByEmail(ctx context.Context, email string) (User, error) {
 
 func (s *Store) UserByID(ctx context.Context, id int64) (User, error) {
 	var u User
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRowContext(ctx,
 		`SELECT id, email, password_hash, created_at FROM users WHERE id = $1`,
 		id).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
 	return u, err
@@ -174,9 +173,9 @@ func (s *Store) UserByID(ctx context.Context, id int64) (User, error) {
 // --- Sessions ---
 
 func (s *Store) CreateSession(ctx context.Context, tokenHash string, userID int64, ttl time.Duration) error {
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, now() + $3::interval)`,
-		tokenHash, userID, ttl.String())
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, datetime('now', ?))`,
+		tokenHash, userID, fmt.Sprintf("+%d seconds", int64(ttl/time.Second)))
 	return err
 }
 
@@ -186,26 +185,26 @@ func (s *Store) UserForSession(ctx context.Context, tokenHash string) (User, err
 		u       User
 		expires time.Time
 	)
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRowContext(ctx,
 		`SELECT u.id, u.email, u.password_hash, u.created_at, s.expires_at
 		 FROM sessions s JOIN users u ON u.id = s.user_id
 		 WHERE s.token_hash = $1`,
 		tokenHash).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt, &expires)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
 	if err != nil {
 		return User{}, err
 	}
 	if time.Now().After(expires) {
-		_, _ = s.pool.Exec(ctx, `DELETE FROM sessions WHERE token_hash = $1`, tokenHash)
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = ?`, tokenHash)
 		return User{}, ErrNotFound
 	}
 	return u, nil
 }
 
 func (s *Store) DeleteSession(ctx context.Context, tokenHash string) error {
-	_, err := s.pool.Exec(ctx, `DELETE FROM sessions WHERE token_hash = $1`, tokenHash)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = ?`, tokenHash)
 	return err
 }
 
@@ -220,22 +219,19 @@ type BookFilter struct {
 // ListBooks returns a user's books, newest first, optionally filtered.
 func (s *Store) ListBooks(ctx context.Context, userID int64, f BookFilter) ([]Book, error) {
 	query := `SELECT id, user_id, title, author, status, rating, review, created_at, finished_at
-	          FROM books WHERE user_id = $1`
+	          FROM books WHERE user_id = ?`
 	args := []any{userID}
-	argn := 2
 	if f.Status != "" {
-		query += ` AND status = $` + itoa(argn)
+		query += ` AND status = ?`
 		args = append(args, f.Status)
-		argn++
 	}
 	if f.Search != "" {
-		query += ` AND (title ILIKE $` + itoa(argn) + ` OR author ILIKE $` + itoa(argn) + `)`
-		args = append(args, "%"+f.Search+"%")
-		argn++
+		query += ` AND (lower(title) LIKE lower(?) OR lower(author) LIKE lower(?))`
+		args = append(args, "%"+f.Search+"%", "%"+f.Search+"%")
 	}
 	query += ` ORDER BY created_at DESC LIMIT 200`
 
-	rows, err := s.pool.Query(ctx, query, args...)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -256,23 +252,23 @@ func (s *Store) ListBooks(ctx context.Context, userID int64, f BookFilter) ([]Bo
 // CreateBook inserts a book, marking finished_at when status is finished.
 func (s *Store) CreateBook(ctx context.Context, userID int64, title, author, status string) (Book, error) {
 	var b Book
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRowContext(ctx,
 		`INSERT INTO books (user_id, title, author, status, finished_at)
-		 VALUES ($1, $2, $3, $4, CASE WHEN $4 = 'finished' THEN now() END)
+			 VALUES (?, ?, ?, ?, CASE WHEN ? = 'finished' THEN CURRENT_TIMESTAMP END)
 		 RETURNING id, user_id, title, author, status, rating, review, created_at, finished_at`,
-		userID, title, author, status).
+		userID, title, author, status, status).
 		Scan(&b.ID, &b.UserID, &b.Title, &b.Author, &b.Status, &b.Rating, &b.Review, &b.CreatedAt, &b.FinishedAt)
 	return b, err
 }
 
 func (s *Store) BookByID(ctx context.Context, userID, bookID int64) (Book, error) {
 	var b Book
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRowContext(ctx,
 		`SELECT id, user_id, title, author, status, rating, review, created_at, finished_at
 		 FROM books WHERE id = $1 AND user_id = $2`,
 		bookID, userID).
 		Scan(&b.ID, &b.UserID, &b.Title, &b.Author, &b.Status, &b.Rating, &b.Review, &b.CreatedAt, &b.FinishedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return Book{}, ErrNotFound
 	}
 	return b, err
@@ -281,22 +277,26 @@ func (s *Store) BookByID(ctx context.Context, userID, bookID int64) (Book, error
 // UpdateBook applies editable fields. Empty status keeps the current value.
 // Transitioning to/from "finished" maintains finished_at.
 func (s *Store) UpdateBook(ctx context.Context, userID, bookID int64, title, author, status string, rating *int, review *string) error {
-	tag, err := s.pool.Exec(ctx,
+	tag, err := s.db.ExecContext(ctx,
 		`UPDATE books SET
-		   title = $3, author = $4,
-		   status = $5,
-		   rating = $6,
-		   review = $7,
+			 title = ?, author = ?,
+			 status = ?,
+			 rating = ?,
+			 review = ?,
 		   finished_at = CASE
-		     WHEN $5 = 'finished' AND finished_at IS NULL THEN now()
-		     WHEN $5 <> 'finished' THEN NULL
+			   WHEN ? = 'finished' AND finished_at IS NULL THEN CURRENT_TIMESTAMP
+			   WHEN ? <> 'finished' THEN NULL
 		     ELSE finished_at END
-		 WHERE id = $1 AND user_id = $2`,
-		bookID, userID, title, author, status, rating, review)
+		 WHERE id = ? AND user_id = ?`,
+		title, author, status, rating, review, status, status, bookID, userID)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	rowsAffected, err := tag.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
 		return ErrNotFound
 	}
 	return nil
@@ -304,29 +304,37 @@ func (s *Store) UpdateBook(ctx context.Context, userID, bookID int64, title, aut
 
 // SetBookStatus is a quick single-field update used by the HTMX status select.
 func (s *Store) SetBookStatus(ctx context.Context, userID, bookID int64, status string) error {
-	tag, err := s.pool.Exec(ctx,
-		`UPDATE books SET status = $3,
+	tag, err := s.db.ExecContext(ctx,
+		`UPDATE books SET status = ?,
 		   finished_at = CASE
-		     WHEN $3 = 'finished' AND finished_at IS NULL THEN now()
-		     WHEN $3 <> 'finished' THEN NULL
+		     WHEN ? = 'finished' AND finished_at IS NULL THEN CURRENT_TIMESTAMP
+		     WHEN ? <> 'finished' THEN NULL
 		     ELSE finished_at END
-		 WHERE id = $1 AND user_id = $2`,
-		bookID, userID, status)
+		 WHERE id = ? AND user_id = ?`,
+		status, status, status, bookID, userID)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	rowsAffected, err := tag.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
 		return ErrNotFound
 	}
 	return nil
 }
 
 func (s *Store) DeleteBook(ctx context.Context, userID, bookID int64) error {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM books WHERE id = $1 AND user_id = $2`, bookID, userID)
+	tag, err := s.db.ExecContext(ctx, `DELETE FROM books WHERE id = ? AND user_id = ?`, bookID, userID)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	rowsAffected, err := tag.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
 		return ErrNotFound
 	}
 	return nil
@@ -336,10 +344,10 @@ func (s *Store) DeleteBook(ctx context.Context, userID, bookID int64) error {
 
 func (s *Store) GetGoal(ctx context.Context, userID int64, year int) (ReadingGoal, error) {
 	var g ReadingGoal
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRowContext(ctx,
 		`SELECT user_id, year, goal FROM reading_goals WHERE user_id = $1 AND year = $2`,
 		userID, year).Scan(&g.UserID, &g.Year, &g.Goal)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return ReadingGoal{}, ErrNotFound
 	}
 	return g, err
@@ -347,10 +355,10 @@ func (s *Store) GetGoal(ctx context.Context, userID int64, year int) (ReadingGoa
 
 // UpsertGoal sets the reading goal for a user/year.
 func (s *Store) UpsertGoal(ctx context.Context, userID int64, year, goal int) error {
-	_, err := s.pool.Exec(ctx,
+	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO reading_goals (user_id, year, goal)
-		 VALUES ($1, $2, $3)
-		 ON CONFLICT (user_id) DO UPDATE SET goal = EXCLUDED.goal, year = EXCLUDED.year, updated_at = now()`,
+		 VALUES (?, ?, ?)
+		 ON CONFLICT (user_id) DO UPDATE SET goal = excluded.goal, year = excluded.year, updated_at = CURRENT_TIMESTAMP`,
 		userID, year, goal)
 	return err
 }
@@ -361,15 +369,15 @@ func (s *Store) UpsertGoal(ctx context.Context, userID int64, year, goal int) er
 func (s *Store) StatsFor(ctx context.Context, userID int64, year int) (Stats, error) {
 	var st Stats
 	st.Year = year
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRowContext(ctx,
 		`SELECT
-		   count(*) FILTER (WHERE status = 'to_read'),
-		   count(*) FILTER (WHERE status = 'reading'),
-		   count(*) FILTER (WHERE status = 'finished'),
-		   count(*) FILTER (WHERE status = 'finished' AND extract(year FROM coalesce(finished_at, created_at)) = $2),
+		   sum(CASE WHEN status = 'to_read' THEN 1 ELSE 0 END),
+		   sum(CASE WHEN status = 'reading' THEN 1 ELSE 0 END),
+		   sum(CASE WHEN status = 'finished' THEN 1 ELSE 0 END),
+		   sum(CASE WHEN status = 'finished' AND strftime('%Y', coalesce(finished_at, created_at)) = ? THEN 1 ELSE 0 END),
 		   count(*)
-		 FROM books WHERE user_id = $1`,
-		userID, year).Scan(&st.ToRead, &st.Reading, &st.Finished, &st.FinishedYear, &st.Total)
+		 FROM books WHERE user_id = ?`,
+		fmt.Sprintf("%04d", year), userID).Scan(&st.ToRead, &st.Reading, &st.Finished, &st.FinishedYear, &st.Total)
 	if err != nil {
 		return Stats{}, err
 	}
@@ -380,12 +388,4 @@ func (s *Store) StatsFor(ctx context.Context, userID int64, year int) (Stats, er
 		return Stats{}, err
 	}
 	return st, nil
-}
-
-// itoa is a tiny helper to keep SQL placeholder numbering readable.
-func itoa(n int) string {
-	if n < 10 {
-		return string(rune('0' + n))
-	}
-	return string(rune('0'+n/10)) + string(rune('0'+n%10))
 }

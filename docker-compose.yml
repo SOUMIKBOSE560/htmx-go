@@ -1,33 +1,15 @@
 services:
-  db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: pageturner
-      POSTGRES_PASSWORD: pageturner
-      POSTGRES_DB: pageturner
-    # Host port 5433 avoids colliding with any local Postgres/Supabase on 5432.
-    ports:
-      - "5433:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U pageturner -d pageturner"]
-      interval: 2s
-      timeout: 3s
-      retries: 20
-
   app:
     build: .
     environment:
-      DATABASE_URL: postgres://pageturner:pageturner@db:5432/pageturner?sslmode=disable
+      DATABASE_URL: file:/data/pageturner.db?_busy_timeout=5000&_foreign_keys=on
       PORT: "8080"
       SESSION_SECRET: ${SESSION_SECRET:-change-me-in-production}
     ports:
       - "8080:8080"
-    depends_on:
-      db:
-        condition: service_healthy
+    volumes:
+      - sqlite-data:/data
     restart: unless-stopped
 
 volumes:
-  pgdata:
+  sqlite-data:

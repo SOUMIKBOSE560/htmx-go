@@ -1,6 +1,6 @@
-.PHONY: build run test vet smoke db-up db-down logs docker-build docker-up docker-down clean
+.PHONY: build run test vet smoke logs docker-build docker-up docker-down clean
 
-# Local development (expects Postgres on localhost:5432, e.g. via `make db-up`)
+# Local development uses the SQLite database at data/pageturner.db.
 build:
 	go build -o bin/pageturner ./cmd/server
 
@@ -16,15 +16,8 @@ smoke:
 vet:
 	go vet ./...
 
-# Postgres via Docker
-db-up:
-	docker compose up -d db
-
-db-down:
-	docker compose down
-
 logs:
-	docker compose logs -f db
+	docker compose logs -f app
 
 # Production image / stack
 docker-build:
