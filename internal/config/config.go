@@ -19,7 +19,7 @@ type Config struct {
 // defaults. Production deployments should set every variable explicitly.
 func Load() Config {
 	cfg := Config{
-		Port:          getenv("PORT", "8080"),
+		Port:          getenv("PORT", "8909"),
 		DatabaseURL:   getenv("DATABASE_URL", "file:data/pageturner.db?_busy_timeout=5000&_foreign_keys=on"),
 		SessionSecret: getenv("SESSION_SECRET", "dev-secret-change-me-in-production"),
 		SessionTTL:    durationEnv("SESSION_TTL", 168*time.Hour),

@@ -27,7 +27,7 @@ func TestSyncDDL(t *testing.T) {
 		t.Fatalf("drop last_synced: %v", err)
 	}
 
-	if err := SyncDDL(ctx, pool); err != nil {
+	if err := SyncDDL(ctx, db); err != nil {
 		t.Fatalf("SyncDDL (first run): %v", err)
 	}
 
@@ -40,7 +40,7 @@ func TestSyncDDL(t *testing.T) {
 	}
 
 	// A second run must be a no-op, not an error.
-	if err := SyncDDL(ctx, pool); err != nil {
+	if err := SyncDDL(ctx, db); err != nil {
 		t.Fatalf("SyncDDL (second run, should be idempotent): %v", err)
 	}
 	var again int64

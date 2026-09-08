@@ -139,34 +139,105 @@ func (s *Store) Ping(ctx context.Context) error {
 
 // --- Users ---
 
+// sqliteTime converts a timestamp column value into time.Time. SQLite stores
+// CURRENT_TIMESTAMP / datetime('now', ...) as "2006-01-02 15:04:05" TEXT,
+// which the driver hands back as string/[]byte — database/sql cannot scan
+// that directly into time.Time, so timestamp columns are scanned into `any`
+// and converted here.
+func sqliteTime(v any) (time.Time, error) {
+	switch t := v.(type) {
+	case nil:
+		return time.Time{}, nil
+	case time.Time:
+		return t, nil
+	case string:
+		return parseSQLiteTime(t)
+	case []byte:
+		return parseSQLiteTime(string(t))
+	default:
+		return time.Time{}, fmt.Errorf("unsupported timestamp type %T", v)
+	}
+}
+
+func parseSQLiteTime(s string) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, nil
+	}
+	for _, layout := range []string{
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05Z07:00",
+		time.RFC3339,
+		"2006-01-02",
+	} {
+		if tm, err := time.Parse(layout, s); err == nil {
+			return tm, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unparseable timestamp %q", s)
+}
+
+// sqliteTimePtr is sqliteTime for nullable columns (NULL/"" -> nil).
+func sqliteTimePtr(v any) (*time.Time, error) {
+	if v == nil {
+		return nil, nil
+	}
+	if s, ok := v.(string); ok && strings.TrimSpace(s) == "" {
+		return nil, nil
+	}
+	if b, ok := v.([]byte); ok && strings.TrimSpace(string(b)) == "" {
+		return nil, nil
+	}
+	tm, err := sqliteTime(v)
+	if err != nil {
+		return nil, err
+	}
+	return &tm, nil
+}
+
 func (s *Store) CreateUser(ctx context.Context, email, passwordHash string) (User, error) {
 	var u User
+	var created any
 	err := s.db.QueryRowContext(ctx,
 		`INSERT INTO users (email, password_hash) VALUES ($1, $2)
 		 RETURNING id, email, password_hash, created_at`,
-		email, passwordHash).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt)
+		email, passwordHash).Scan(&u.ID, &u.Email, &u.PasswordHash, &created)
+	if err != nil {
+		return User{}, err
+	}
+	u.CreatedAt, err = sqliteTime(created)
 	return u, err
 }
 
 func (s *Store) UserByEmail(ctx context.Context, email string) (User, error) {
 	var u User
+	var created any
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, email, password_hash, created_at FROM users WHERE email = $1`,
-		email).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt)
+		email).Scan(&u.ID, &u.Email, &u.PasswordHash, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
+	if err != nil {
+		return User{}, err
+	}
+	u.CreatedAt, err = sqliteTime(created)
 	return u, err
 }
 
 func (s *Store) UserByID(ctx context.Context, id int64) (User, error) {
 	var u User
+	var created any
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, email, password_hash, created_at FROM users WHERE id = $1`,
-		id).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt)
+		id).Scan(&u.ID, &u.Email, &u.PasswordHash, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
+	if err != nil {
+		return User{}, err
+	}
+	u.CreatedAt, err = sqliteTime(created)
 	return u, err
 }
 
@@ -183,20 +254,28 @@ func (s *Store) CreateSession(ctx context.Context, tokenHash string, userID int6
 func (s *Store) UserForSession(ctx context.Context, tokenHash string) (User, error) {
 	var (
 		u       User
-		expires time.Time
+		created any
+		expires any
 	)
 	err := s.db.QueryRowContext(ctx,
 		`SELECT u.id, u.email, u.password_hash, u.created_at, s.expires_at
 		 FROM sessions s JOIN users u ON u.id = s.user_id
 		 WHERE s.token_hash = $1`,
-		tokenHash).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt, &expires)
+		tokenHash).Scan(&u.ID, &u.Email, &u.PasswordHash, &created, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
 	if err != nil {
 		return User{}, err
 	}
-	if time.Now().After(expires) {
+	if u.CreatedAt, err = sqliteTime(created); err != nil {
+		return User{}, err
+	}
+	expiresAt, err := sqliteTime(expires)
+	if err != nil {
+		return User{}, err
+	}
+	if time.Now().After(expiresAt) {
 		_, _ = s.db.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = ?`, tokenHash)
 		return User{}, ErrNotFound
 	}
@@ -240,8 +319,15 @@ func (s *Store) ListBooks(ctx context.Context, userID int64, f BookFilter) ([]Bo
 	var books []Book
 	for rows.Next() {
 		var b Book
+		var created, finished any
 		if err := rows.Scan(&b.ID, &b.UserID, &b.Title, &b.Author, &b.Status,
-			&b.Rating, &b.Review, &b.CreatedAt, &b.FinishedAt); err != nil {
+			&b.Rating, &b.Review, &created, &finished); err != nil {
+			return nil, err
+		}
+		if b.CreatedAt, err = sqliteTime(created); err != nil {
+			return nil, err
+		}
+		if b.FinishedAt, err = sqliteTimePtr(finished); err != nil {
 			return nil, err
 		}
 		books = append(books, b)
@@ -252,25 +338,41 @@ func (s *Store) ListBooks(ctx context.Context, userID int64, f BookFilter) ([]Bo
 // CreateBook inserts a book, marking finished_at when status is finished.
 func (s *Store) CreateBook(ctx context.Context, userID int64, title, author, status string) (Book, error) {
 	var b Book
+	var created, finished any
 	err := s.db.QueryRowContext(ctx,
 		`INSERT INTO books (user_id, title, author, status, finished_at)
 			 VALUES (?, ?, ?, ?, CASE WHEN ? = 'finished' THEN CURRENT_TIMESTAMP END)
 		 RETURNING id, user_id, title, author, status, rating, review, created_at, finished_at`,
 		userID, title, author, status, status).
-		Scan(&b.ID, &b.UserID, &b.Title, &b.Author, &b.Status, &b.Rating, &b.Review, &b.CreatedAt, &b.FinishedAt)
+		Scan(&b.ID, &b.UserID, &b.Title, &b.Author, &b.Status, &b.Rating, &b.Review, &created, &finished)
+	if err != nil {
+		return Book{}, err
+	}
+	if b.CreatedAt, err = sqliteTime(created); err != nil {
+		return Book{}, err
+	}
+	b.FinishedAt, err = sqliteTimePtr(finished)
 	return b, err
 }
 
 func (s *Store) BookByID(ctx context.Context, userID, bookID int64) (Book, error) {
 	var b Book
+	var created, finished any
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, user_id, title, author, status, rating, review, created_at, finished_at
 		 FROM books WHERE id = $1 AND user_id = $2`,
 		bookID, userID).
-		Scan(&b.ID, &b.UserID, &b.Title, &b.Author, &b.Status, &b.Rating, &b.Review, &b.CreatedAt, &b.FinishedAt)
+		Scan(&b.ID, &b.UserID, &b.Title, &b.Author, &b.Status, &b.Rating, &b.Review, &created, &finished)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Book{}, ErrNotFound
 	}
+	if err != nil {
+		return Book{}, err
+	}
+	if b.CreatedAt, err = sqliteTime(created); err != nil {
+		return Book{}, err
+	}
+	b.FinishedAt, err = sqliteTimePtr(finished)
 	return b, err
 }
 

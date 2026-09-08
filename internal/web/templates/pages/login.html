@@ -3,22 +3,17 @@
 {{define "content"}}
 <div class="auth-wrap">
   <div class="auth-card">
-    <div class="auth-head">
-      <h1>Welcome back</h1>
-      <p>Log in to your library.</p>
-    </div>
-    {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+    <h1>Welcome back.</h1>
+    <p class="auth-sub">Log in to open the Markitdown converter.</p>
+    {{if .Error}}<p class="auth-error" role="alert">{{.Error}}</p>{{end}}
     <form method="post" action="/login">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
-      <label>Email
-        <input type="email" name="email" value="{{.Email}}" required autofocus autocomplete="email">
-      </label>
-      <label>Password
-        <input type="password" name="password" required autocomplete="current-password">
-      </label>
-      <button class="btn btn-primary btn-block" type="submit">Log In</button>
+      <input class="text-input" type="email" name="email" value="{{.Email}}" placeholder="Email address" required autofocus autocomplete="email">
+      <input class="text-input" type="password" name="password" placeholder="Password" required autocomplete="current-password">
+      <button class="btn-primary" type="submit">Continue</button>
     </form>
-    <p class="auth-alt">New here? <a href="/register">Create an account</a></p>
+    <button class="btn-outline" type="button" onclick="return false;">Continue with Google</button>
+    <p class="auth-fine">Protected by session cookies + double-submit CSRF. No tracking.</p>
   </div>
 </div>
 {{end}}

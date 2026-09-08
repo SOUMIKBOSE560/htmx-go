@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"pageturner/internal/auth"
 	"pageturner/internal/config"
 	"pageturner/internal/database"
 	"pageturner/internal/logs"
@@ -43,6 +45,7 @@ func main() {
 	log.Info("database ready, migrations applied and ddl synced")
 
 	store := models.NewStore(pool)
+	seedUser(ctx, store, log)
 	srv := web.NewServer(cfg, store, log, hub)
 
 	httpServer := &http.Server{
@@ -88,4 +91,33 @@ func newLogger(format string, hub *logs.Hub) *slog.Logger {
 	// Output goes to stdout as before, but every line is also published to the
 	// hub so the frontend log viewer can stream it live.
 	return slog.New(logs.NewStreamHandler(inner, hub))
+}
+
+// seedUser creates the SEED_EMAIL account on boot when SEED_EMAIL and
+// SEED_PASSWORD are set (see .env). It is a no-op when the user exists,
+// so restarts are safe.
+func seedUser(ctx context.Context, store *models.Store, log *slog.Logger) {
+	email := strings.ToLower(strings.TrimSpace(os.Getenv("SEED_EMAIL")))
+	if email == "" {
+		return
+	}
+	password := os.Getenv("SEED_PASSWORD")
+	if password == "" {
+		log.Error("SEED_EMAIL is set but SEED_PASSWORD is empty; skipping seed user")
+		return
+	}
+	if _, err := store.UserByEmail(ctx, email); err == nil {
+		log.Info("seed user already exists", "email", email)
+		return
+	}
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		log.Error("seed user hashing failed", "error", err)
+		return
+	}
+	if _, err := store.CreateUser(ctx, email, hash); err != nil {
+		log.Error("seed user creation failed", "error", err)
+		return
+	}
+	log.Info("seed user created", "email", email)
 }

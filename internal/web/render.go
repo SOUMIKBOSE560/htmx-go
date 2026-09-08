@@ -22,7 +22,7 @@ var funcs = template.FuncMap{
 
 // pageNames are the standalone pages, each parsed into its own template set so
 // their "content" block definitions don't collide with each other.
-var pageNames = []string{"login", "register", "dashboard", "books"}
+var pageNames = []string{"home", "login", "markitdown"}
 
 // fragments holds base.html plus all partials, shared across pages.
 var fragments *template.Template
@@ -34,7 +34,6 @@ func init() {
 	var err error
 	fragments, err = template.New("").Funcs(funcs).ParseFS(content,
 		"templates/*.html",
-		"templates/partials/*.html",
 	)
 	if err != nil {
 		panic(fmt.Sprintf("parse base/partials templates: %v", err))
@@ -85,7 +84,8 @@ func staticFiles() http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, ".js") || strings.HasSuffix(r.URL.Path, ".css") {
-			w.Header().Set("Cache-Control", "public, max-age=86400")
+			// Versioned URLs (?v=) carry the cache-busting; revalidate often.
+			w.Header().Set("Cache-Control", "public, max-age=3600, must-revalidate")
 		}
 		http.FileServer(http.FS(sub)).ServeHTTP(w, r)
 	})

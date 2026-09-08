@@ -9,13 +9,13 @@ RUN go mod download
 COPY . .
 # Everything (templates, static assets, migrations) is embedded at compile
 # time, so the output is a single self-contained static binary.
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/pageturner ./cmd/server
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/markitdown ./cmd/server
 RUN mkdir /data
 
 # ---- runtime stage: distroless, no shell, non-root, ~15MB image ----
 FROM gcr.io/distroless/static-debian12:nonroot
-COPY --from=build /out/pageturner /pageturner
+COPY --from=build /out/markitdown /markitdown
 COPY --from=build --chown=nonroot:nonroot /data /data
-EXPOSE 8080
+EXPOSE 8909
 USER nonroot:nonroot
-ENTRYPOINT ["/pageturner"]
+ENTRYPOINT ["/markitdown"]

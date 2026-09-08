@@ -1,0 +1,37 @@
+{{define "home"}}{{template "base" .}}{{end}}
+
+{{define "content"}}
+<section class="hero">
+  <h1>Discover real-world markdown inspiration.</h1>
+  <p class="hero-sub">Paste messy text on the left. Stream back a clean, invoice-ready document on the right.</p>
+  <div class="hero-ctas">
+    <a class="btn-primary" href="/markitdown">Open converter</a>
+    {{if .User.ID}}
+    <span class="btn-soft">Signed in as {{.User.Email}}</span>
+    {{else}}
+    <a class="btn-outline" href="/login">Log in</a>
+    {{end}}
+  </div>
+</section>
+
+<section class="card-grid">
+  <div class="feature-card">
+    <h3>Paste anything.</h3>
+    <p>Raw PDF text, copied email threads, chaotic notes. The left panel takes it all.</p>
+  </div>
+  <div class="feature-card">
+    <h3>Convert in one tap.</h3>
+    <p>A single pill button opens a streaming extraction, chunk by chunk.</p>
+  </div>
+  <div class="feature-card">
+    <h3>Read it live.</h3>
+    <p>The invoice renders as markdown arrives, exactly like a fresh export.</p>
+  </div>
+</section>
+
+<section class="faq">
+  <div class="faq-row">How does the demo stream work? The server sends OpenAI-style deltas over SSE.</div>
+  <div class="faq-row">Do I need an account? Log in once, then open the converter.</div>
+  <div class="faq-row">Is my text stored? No. The demo builds a deterministic preview in memory.</div>
+</section>
+{{end}}

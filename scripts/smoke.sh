@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end smoke test for Pageturner.
+# End-to-end smoke test for Markitdown.
 # Usage: scripts/smoke.sh [port]
 set -euo pipefail
 
@@ -11,10 +11,10 @@ cleanup() { [[ -n "${PID:-}" ]] && kill "$PID" 2>/dev/null || true; rm -f "$JAR"
 trap cleanup EXIT
 
 echo "== building =="
-go build -o bin/pageturner ./cmd/server
+go build -o bin/markitdown ./cmd/server
 
 echo "== starting server on :${PORT} =="
-PORT="$PORT" ./bin/pageturner >"$LOG" 2>&1 &
+PORT="$PORT" ./bin/markitdown >"$LOG" 2>&1 &
 PID=$!
 for _ in $(seq 1 30); do
   curl -sf "$BASE/healthz" >/dev/null 2>&1 && break
@@ -27,51 +27,29 @@ fail() { echo "  ✗ $1"; kill "$PID"; exit 1; }
 echo "== health =="
 curl -sf "$BASE/healthz" | grep -q '"status":"ok"' && pass "healthz returns ok" || fail "healthz"
 
-echo "== register =="
-curl -sf -c "$JAR" "$BASE/register" -o /tmp/pt-reg.html
-CSRF=$(grep -o 'name="csrf" value="[^"]*"' /tmp/pt-reg.html | head -1 | sed 's/.*value="//;s/"$//')
-[[ -n "$CSRF" ]] && pass "register page has CSRF token" || fail "no CSRF on register page"
-curl -sfL -b "$JAR" -c "$JAR" \
-  -d "csrf=${CSRF}&email=smoke-$(date +%s)@test.dev&password=password123" \
-  "$BASE/register" -o /tmp/pt-reg2.html -w "%{http_code}" | grep -q 200 \
-  && pass "register succeeds" || fail "register"
+echo "== home =="
+curl -sf "$BASE/" | grep -q "Markitdown" && pass "home renders" || fail "home"
 
-echo "== dashboard (authed) =="
-curl -sf -b "$JAR" "$BASE/" | grep -q "Welcome back" && pass "dashboard renders" || fail "dashboard"
+echo "== login =="
+curl -sf -c "$JAR" "$BASE/login" -o /tmp/pt-login.html
+grep -q 'name="csrf" value="' /tmp/pt-login.html && pass "login page has CSRF token" || fail "no CSRF on login page"
+grep -q "Welcome back." /tmp/pt-login.html && pass "login heading renders" || fail "login heading"
 
-echo "== add book via HTMX =="
-NEWCSRF=$(awk '$6=="csrf"{print $7}' "$JAR")
-RESP=$(curl -sf -b "$JAR" -H "HX-Request: true" -H "X-CSRF-Token: ${NEWCSRF}" \
-  -d "title=Dune&author=Frank Herbert&status=reading" "$BASE/books")
-echo "$RESP" | grep -q 'id="book-' && pass "book card fragment returned" || fail "add book fragment"
-echo "$RESP" | grep -q 'hx-swap-oob="true"' && pass "OOB stats refresh included" || fail "OOB stats"
+echo "== markitdown requires auth =="
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/markitdown")
+[[ "$CODE" == "303" ]] && pass "markitdown redirects anonymous to login (got $CODE)" || fail "markitdown auth ($CODE)"
 
-echo "== live search =="
-curl -sf -b "$JAR" -H "HX-Request: true" "$BASE/books/search?q=dune" \
-  | grep -q "Dune" && pass "search finds book" || fail "search"
-
-echo "== status change =="
-BOOKID=$(echo "$RESP" | grep -o 'id="book-[0-9]*"' | head -1 | grep -o '[0-9]*')
-[[ -n "$BOOKID" ]] || fail "could not extract book id from response"
-curl -sf -b "$JAR" -H "HX-Request: true" -H "X-CSRF-Token: ${NEWCSRF}" \
-  -X PATCH -d "status=finished" "$BASE/books/${BOOKID}/status" \
-  | grep -q 'hx-swap-oob="true"' && pass "status patch returns OOB updates" || fail "status patch"
-
-echo "== reading goal =="
-curl -sf -b "$JAR" -H "HX-Request: true" -H "X-CSRF-Token: ${NEWCSRF}" \
-  -d "goal=12" "$BASE/goal" | grep -q "12" && pass "goal saved and panel re-rendered" || fail "goal"
+echo "== stream requires auth =="
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/markitdown/stream?text=hello")
+[[ "$CODE" == "303" ]] && pass "stream redirects anonymous (got $CODE)" || fail "stream auth ($CODE)"
 
 echo "== static assets =="
 curl -sf "$BASE/static/htmx.min.js" | head -c 20 | grep -q "htmx" && pass "htmx served locally" || fail "htmx asset"
-curl -sf "$BASE/static/logs.js" | head -c 30 | grep -q "Live backend log viewer" && pass "logs.js served" || fail "logs.js asset"
-
-echo "== live log stream (SSE) =="
-# The stream stays open; read 2s of it, then check it emitted SSE frames.
-curl -sfN -b "$JAR" --max-time 2 "$BASE/logs/stream" > /tmp/pt-logs.txt 2>/dev/null || true
-grep -q "^data:" /tmp/pt-logs.txt && pass "log stream emits SSE events" || fail "log stream"
+curl -sf "$BASE/static/style.css" | grep -q "nav-pill" && pass "theme css served" || fail "css asset"
+curl -sf "$BASE/static/markitdown.js" | grep -q "EventSource" && pass "converter js served" || fail "converter asset"
 
 echo "== CSRF rejected without token =="
-CODE=$(curl -s -o /dev/null -w "%{http_code}" -b "$JAR" -d "title=X&author=Y" "$BASE/books")
+CODE=$(curl -s -o /dev/null -w "%{http_code}" -b "$JAR" -d "email=x@y.z&password=secret123" "$BASE/login")
 [[ "$CODE" == "403" ]] && pass "CSRF protection blocks tokenless POST (got $CODE)" || fail "csrf ($CODE)"
 
 echo ""

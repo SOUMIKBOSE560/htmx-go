@@ -92,12 +92,12 @@ func (s *Server) csrf(next http.Handler) http.Handler {
 }
 
 // requireAuth loads the session user and attaches them to the request context.
-// Public routes (login/register/health/static) pass through untouched.
+// Public routes (home/login/health/static) pass through untouched.
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Public routes.
-		switch {
-		case r.URL.Path == "/login" || r.URL.Path == "/register":
+	// Public routes.
+	switch {
+	case r.URL.Path == "/" || r.URL.Path == "/login":
 			next.ServeHTTP(w, r)
 			return
 		case r.URL.Path == "/healthz":

@@ -3,9 +3,8 @@ package web
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -15,19 +14,13 @@ import (
 
 // pageData carries everything templates need.
 type pageData struct {
-	User   models.User
-	CSRF   string
-	Stats  models.Stats
-	Books  []models.Book
-	Book   models.Book
-	Goal   int
-	Year   int
-	Status string
-	Search string
-	Error  string
-	Email  string
-	// Light flips the layout to the light transactional theme (auth pages).
-	Light bool
+	User  models.User
+	CSRF  string
+	Error string
+	Email string
+	// Bare renders the page chromeless (no nav, no footer) for full-viewport
+	// app screens like /markitdown.
+	Bare bool
 }
 
 // --- Health ---
@@ -45,16 +38,20 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"}) //nolint:errcheck
 }
 
-// --- Auth pages ---
+// --- Home (public landing) ---
+
+func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
+	render(w, r, "home", pageData{User: userFrom(r), CSRF: csrfFrom(r)})
+}
+
+// --- Auth ---
 
 func (s *Server) handleLoginGet(w http.ResponseWriter, r *http.Request) {
 	if _, err := r.Cookie("session"); err == nil {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		http.Redirect(w, r, "/markitdown", http.StatusSeeOther)
 		return
 	}
-	// The csrf middleware has already ensured a cookie exists; reuse that
-	// token rather than rotating it, so open/stale pages keep working.
-	render(w, r, "login", pageData{CSRF: csrfFrom(r), Light: true})
+	render(w, r, "login", pageData{CSRF: csrfFrom(r)})
 }
 
 func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
@@ -63,48 +60,11 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 
 	user, err := s.store.UserByEmail(r.Context(), strings.ToLower(email))
 	if err != nil || !auth.CheckPassword(user.PasswordHash, password) {
-		render(w, r, "login", pageData{CSRF: csrfFrom(r), Email: email, Error: "Invalid email or password.", Light: true})
+		render(w, r, "login", pageData{CSRF: csrfFrom(r), Email: email, Error: "Invalid email or password."})
 		return
 	}
 	s.startSession(w, r, user)
-	http.Redirect(w, r, "/", http.StatusSeeOther)
-}
-
-func (s *Server) handleRegisterGet(w http.ResponseWriter, r *http.Request) {
-	// The csrf middleware has already ensured a cookie exists; reuse that
-	// token rather than rotating it, so open/stale pages keep working.
-	render(w, r, "register", pageData{CSRF: csrfFrom(r), Light: true})
-}
-
-func (s *Server) handleRegisterPost(w http.ResponseWriter, r *http.Request) {
-	email := strings.TrimSpace(r.FormValue("email"))
-	password := r.FormValue("password")
-
-	if email == "" || !strings.Contains(email, "@") {
-		render(w, r, "register", pageData{CSRF: csrfFrom(r), Email: email, Error: "Please enter a valid email address.", Light: true})
-		return
-	}
-	if len(password) < 8 {
-		render(w, r, "register", pageData{CSRF: csrfFrom(r), Email: email, Error: "Password must be at least 8 characters.", Light: true})
-		return
-	}
-
-	hash, err := auth.HashPassword(password)
-	if err != nil {
-		s.renderError(w, r, "register", "Something went wrong. Please try again.", email)
-		return
-	}
-	user, err := s.store.CreateUser(r.Context(), strings.ToLower(email), hash)
-	if err != nil {
-		if strings.Contains(err.Error(), "unique") {
-			render(w, r, "register", pageData{CSRF: csrfFrom(r), Email: email, Error: "An account with that email already exists.", Light: true})
-			return
-		}
-		s.renderError(w, r, "register", "Something went wrong. Please try again.", email)
-		return
-	}
-	s.startSession(w, r, user)
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, "/markitdown", http.StatusSeeOther)
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -120,11 +80,11 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) startSession(w http.ResponseWriter, r *http.Request, user models.User) {
 	token, err := auth.NewToken()
 	if err != nil {
-		s.renderError(w, r, "login", "Could not create session. Please try again.", user.Email)
+		render(w, r, "login", pageData{CSRF: csrfFrom(r), Email: user.Email, Error: "Could not create session. Please try again."})
 		return
 	}
 	if err := s.store.CreateSession(r.Context(), auth.HashToken(token), user.ID, s.cfg.SessionTTL); err != nil {
-		s.renderError(w, r, "login", "Could not create session. Please try again.", user.Email)
+		render(w, r, "login", pageData{CSRF: csrfFrom(r), Email: user.Email, Error: "Could not create session. Please try again."})
 		return
 	}
 	http.SetCookie(w, s.sessionCookie(token, s.ttlSeconds()))
@@ -133,338 +93,111 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, user model
 	http.SetCookie(w, s.csrfCookie(csrf, s.ttlSeconds()))
 }
 
-func (s *Server) renderError(w http.ResponseWriter, r *http.Request, page, msg, email string) {
-	render(w, r, page, pageData{CSRF: csrfFrom(r), Error: msg, Email: email, Light: true})
-}
+// --- Markitdown (authenticated) ---
 
-// --- Dashboard ---
-
-func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleMarkitdown(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.requireUser(r)
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	year := time.Now().Year()
-	stats, err := s.store.StatsFor(r.Context(), user.ID, year)
-	if err != nil {
-		s.log.Error("stats", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	books, err := s.store.ListBooks(r.Context(), user.ID, models.BookFilter{})
-	if err != nil {
-		s.log.Error("list books", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	if len(books) > 5 {
-		books = books[:5]
-	}
-	render(w, r, "dashboard", pageData{
-		User:  user,
-		CSRF:  csrfFrom(r),
-		Stats: stats,
-		Books: books,
-		Year:  year,
-		Goal:  stats.Goal,
-	})
+	render(w, r, "markitdown", pageData{User: user, CSRF: csrfFrom(r), Bare: true})
 }
 
-// --- Books page & search ---
+// sseChunk mimics one OpenAI chat-completion streaming delta.
+type sseChunk struct {
+	Delta string `json:"delta"`
+	Done  bool   `json:"done"`
+}
 
-func (s *Server) handleBooks(w http.ResponseWriter, r *http.Request) {
-	user, ok := s.requireUser(r)
-	if !ok {
+// handleMarkitdownStream streams a dummy "OpenAI" response as SSE: an invoice
+// extracted as markdown, chunked word-by-word so the right panel can render
+// it live like a PDF extraction.
+func (s *Server) handleMarkitdownStream(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireUser(r); !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	filter := filterFrom(r)
-	books, err := s.store.ListBooks(r.Context(), user.ID, filter)
-	if err != nil {
-		s.log.Error("list books", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	stats, err := s.store.StatsFor(r.Context(), user.ID, time.Now().Year())
-	if err != nil {
-		s.log.Error("stats", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	render(w, r, "books", pageData{
-		User:   user,
-		CSRF:   csrfFrom(r),
-		Stats:  stats,
-		Books:  books,
-		Status: filter.Status,
-		Search: filter.Search,
-	})
-}
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
 
-// handleBooksSearch is the HTMX endpoint for the live search/filter box.
-func (s *Server) handleBooksSearch(w http.ResponseWriter, r *http.Request) {
-	user, ok := s.requireUser(r)
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	filter := filterFrom(r)
-	books, err := s.store.ListBooks(r.Context(), user.ID, filter)
-	if err != nil {
-		s.log.Error("search books", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	render(w, r, "book_list", pageData{Books: books})
-}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 
-func filterFrom(r *http.Request) models.BookFilter {
-	return models.BookFilter{
-		Status: r.URL.Query().Get("status"),
-		Search: strings.TrimSpace(r.URL.Query().Get("q")),
-	}
-}
+	raw := strings.TrimSpace(r.URL.Query().Get("text"))
+	md := dummyInvoiceMarkdown(raw)
 
-// --- Book mutations (HTMX fragments) ---
-
-func (s *Server) handleBookCreate(w http.ResponseWriter, r *http.Request) {
-	user, ok := s.requireUser(r)
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	title := strings.TrimSpace(r.FormValue("title"))
-	author := strings.TrimSpace(r.FormValue("author"))
-	status := r.FormValue("status")
-
-	if title == "" || author == "" {
-		// Re-render the add form with the error, swapping it in place.
-		w.Header().Set("HX-Retarget", "#add-form")
-		w.Header().Set("HX-Reswap", "outerHTML")
-		render(w, r, "book_form", pageData{Error: "Title and author are required."})
-		return
-	}
-	if !models.ValidStatus(status) {
-		status = models.StatusToRead
-	}
-
-	book, err := s.store.CreateBook(r.Context(), user.ID, title, author, status)
-	if err != nil {
-		s.log.Error("create book", "error", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	s.renderBookCardAndStats(w, r, book, user)
-}
-
-func (s *Server) handleBookEdit(w http.ResponseWriter, r *http.Request) {
-	user, ok := s.requireUser(r)
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	book, err := s.bookFor(r, user)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	render(w, r, "edit_form", pageData{Book: book, CSRF: csrfFrom(r)})
-}
-
-func (s *Server) handleBookUpdate(w http.ResponseWriter, r *http.Request) {
-	user, ok := s.requireUser(r)
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	book, err := s.bookFor(r, user)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-
-	title := strings.TrimSpace(r.FormValue("title"))
-	author := strings.TrimSpace(r.FormValue("author"))
-	status := r.FormValue("status")
-	if status == "" {
-		status = book.Status
-	}
-	rating, review := parseRatingReview(r)
-
-	if title == "" || author == "" || !models.ValidStatus(status) {
-		render(w, r, "edit_form", pageData{
-			Book:  book,
-			CSRF:  csrfFrom(r),
-			Error: "Title and author are required.",
-		})
-		return
-	}
-
-	if err := s.store.UpdateBook(r.Context(), user.ID, book.ID, title, author, status, rating, review); err != nil {
-		s.log.Error("update book", "error", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	updated, err := s.store.BookByID(r.Context(), user.ID, book.ID)
-	if err != nil {
-		s.log.Error("reload book", "error", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	s.renderBookBodyAndStats(w, r, updated, user)
-}
-
-func (s *Server) handleBookStatus(w http.ResponseWriter, r *http.Request) {
-	user, ok := s.requireUser(r)
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	book, err := s.bookFor(r, user)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	status := r.FormValue("status")
-	if !models.ValidStatus(status) {
-		http.Error(w, "invalid status", http.StatusBadRequest)
-		return
-	}
-	if err := s.store.SetBookStatus(r.Context(), user.ID, book.ID, status); err != nil {
-		s.log.Error("set status", "error", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	updated, err := s.store.BookByID(r.Context(), user.ID, book.ID)
-	if err != nil {
-		s.log.Error("reload book", "error", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	s.renderBookBodyAndStats(w, r, updated, user)
-}
-
-func (s *Server) handleBookView(w http.ResponseWriter, r *http.Request) {
-	user, ok := s.requireUser(r)
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	book, err := s.bookFor(r, user)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	render(w, r, "book_body", pageData{Book: book})
-}
-
-func (s *Server) handleBookDelete(w http.ResponseWriter, r *http.Request) {
-	user, ok := s.requireUser(r)
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	book, err := s.bookFor(r, user)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	if err := s.store.DeleteBook(r.Context(), user.ID, book.ID); err != nil {
-		s.log.Error("delete book", "error", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	s.renderStatsOOB(w, r, user)
-}
-
-// --- Reading goal ---
-
-func (s *Server) handleGoal(w http.ResponseWriter, r *http.Request) {
-	user, ok := s.requireUser(r)
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	year := time.Now().Year()
-	goal, err := strconv.Atoi(r.FormValue("goal"))
-	if err != nil || goal < 1 || goal > 500 {
-		stats, _ := s.store.StatsFor(r.Context(), user.ID, year)
-		render(w, r, "goal_panel", pageData{
-			User:  user,
-			Stats: stats,
-			Error: "Goal must be a number between 1 and 500.",
-		})
-		return
-	}
-	if err := s.store.UpsertGoal(r.Context(), user.ID, year, goal); err != nil {
-		s.log.Error("upsert goal", "error", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	stats, err := s.store.StatsFor(r.Context(), user.ID, year)
-	if err != nil {
-		s.log.Error("stats", "error", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	render(w, r, "goal_panel", pageData{User: user, Stats: stats})
-}
-
-// --- fragment helpers ---
-
-// renderBookCardAndStats returns a new card (for prepend) plus an OOB stats refresh.
-func (s *Server) renderBookCardAndStats(w http.ResponseWriter, r *http.Request, book models.Book, user models.User) {
-	stats, err := s.store.StatsFor(r.Context(), user.ID, time.Now().Year())
-	if err != nil {
-		s.log.Error("stats", "error", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	render(w, r, "book_card", pageData{Book: book, Stats: stats})
-}
-
-// renderBookBodyAndStats returns the refreshed book body plus OOB stats.
-func (s *Server) renderBookBodyAndStats(w http.ResponseWriter, r *http.Request, book models.Book, user models.User) {
-	stats, err := s.store.StatsFor(r.Context(), user.ID, time.Now().Year())
-	if err != nil {
-		s.log.Error("stats", "error", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	render(w, r, "book_body_and_stats", pageData{Book: book, Stats: stats})
-}
-
-func (s *Server) renderStatsOOB(w http.ResponseWriter, r *http.Request, user models.User) {
-	stats, err := s.store.StatsFor(r.Context(), user.ID, time.Now().Year())
-	if err != nil {
-		s.log.Error("stats", "error", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	render(w, r, "stats_bar_oob", pageData{Stats: stats})
-}
-
-// bookFor loads the current user's book by the {id} path param.
-func (s *Server) bookFor(r *http.Request, user models.User) (models.Book, error) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		return models.Book{}, errors.New("bad id")
-	}
-	return s.store.BookByID(r.Context(), user.ID, id)
-}
-
-// parseRatingReview extracts optional rating (1-5) and review text.
-func parseRatingReview(r *http.Request) (*int, *string) {
-	var rating *int
-	if v := r.FormValue("rating"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 5 {
-			rating = &n
+	// Chunk by words to feel like token streaming.
+	words := strings.SplitAfter(md, " ")
+	flusher, _ := w.(http.Flusher)
+	for _, wd := range words {
+		select {
+		case <-r.Context().Done():
+			return
+		default:
 		}
+		payload, _ := json.Marshal(sseChunk{Delta: wd})
+		fmt.Fprintf(w, "data: %s\n\n", payload)
+		if flusher != nil {
+			flusher.Flush()
+		} else {
+			_ = rc.Flush()
+		}
+		time.Sleep(45 * time.Millisecond)
 	}
-	var review *string
-	if v := strings.TrimSpace(r.FormValue("review")); v != "" {
-		review = &v
+	done, _ := json.Marshal(sseChunk{Done: true})
+	fmt.Fprintf(w, "data: %s\n\n", done)
+	if flusher != nil {
+		flusher.Flush()
+	} else {
+		_ = rc.Flush()
 	}
-	return rating, review
+}
+
+// dummyInvoiceMarkdown builds a deterministic invoice-style markdown doc from
+// whatever the user pasted, so the demo always shows a plausible extraction.
+func dummyInvoiceMarkdown(raw string) string {
+	source := strings.TrimSpace(raw)
+	if len(source) > 140 {
+		source = source[:140] + "…"
+	}
+	if source == "" {
+		source = "Pasted PDF text"
+	}
+	lines := []string{
+		"# INVOICE",
+		"",
+		"**Acme Corp.** · 548 Market St, San Francisco, CA",
+		"Invoice **#INV-2026-0847** · Issued Aug 18, 2026 · Due Sep 01, 2026",
+		"",
+		"---",
+		"",
+		"## Bill to",
+		"",
+		"Globex Inc. — accounts-payable@globex.example",
+		"",
+		"> Source excerpt: \"" + source + "\"",
+		"",
+		"## Line items",
+		"",
+		"| Item | Qty | Unit | Amount |",
+		"| --- | ---: | ---: | ---: |",
+		"| Design system audit | 12 hrs | $150.00 | $1,800.00 |",
+		"| Markitdown extraction API | 4,200 pages | $0.04 | $168.00 |",
+		"| Priority support | 1 mo | $99.00 | $99.00 |",
+		"",
+		"## Summary",
+		"",
+		"- Subtotal: **$2,067.00**",
+		"- Tax (8.5%): **$175.70**",
+		"- **Total due: $2,242.70**",
+		"",
+		"---",
+		"",
+		"_Extracted with Markitdown · confidence 0.98 · 3 pages · model markitdown-dummy-1_",
+		"",
+	}
+	return strings.Join(lines, "\n")
 }

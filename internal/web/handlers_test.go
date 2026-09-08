@@ -1,21 +1,17 @@
 package web
 
 import (
-	"context"
 	"database/sql"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	_ "modernc.org/sqlite"
 
 	"pageturner/internal/config"
-	"pageturner/internal/database"
 	"pageturner/internal/logs"
 	"pageturner/internal/models"
 )
@@ -24,10 +20,8 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
 }
 
-// TestHealthUnreachable verifies /healthz reports 503 when the DB is down,
-// which exercises the wiring without needing a live database. The pool is
-// built directly against a missing read-only path to simulate a broken backend.
-func TestHealthUnreachable(t *testing.T) {
+func testServerNoDB(t *testing.T) *Server {
+	t.Helper()
 	cfg := config.Load()
 	cfg.DatabaseURL = "file:/path-that-does-not-exist/pageturner.db?mode=ro"
 
@@ -35,9 +29,13 @@ func TestHealthUnreachable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	defer db.Close()
+	t.Cleanup(func() { db.Close() })
+	return NewServer(cfg, models.NewStore(db), testLogger(), logs.NewHub(200))
+}
 
-	srv := NewServer(cfg, models.NewStore(db), testLogger(), logs.NewHub(200))
+// TestHealthUnreachable verifies /healthz reports 503 when the DB is down.
+func TestHealthUnreachable(t *testing.T) {
+	srv := testServerNoDB(t)
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
@@ -52,14 +50,7 @@ func TestHealthUnreachable(t *testing.T) {
 
 // TestLoginPageRenders verifies the public login page renders the CSRF form.
 func TestLoginPageRenders(t *testing.T) {
-	cfg := config.Load()
-	pool, err := database.Connect(context.Background(), cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("no database available: %v", err)
-	}
-	defer pool.Close()
-
-	srv := NewServer(cfg, models.NewStore(pool), testLogger(), logs.NewHub(200))
+	srv := testServerNoDB(t)
 	req := httptest.NewRequest(http.MethodGet, "/login", nil)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
@@ -68,7 +59,7 @@ func TestLoginPageRenders(t *testing.T) {
 		t.Fatalf("GET /login = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "Welcome back") {
+	if !strings.Contains(body, "Welcome back.") {
 		t.Fatal("login page missing heading")
 	}
 	if !strings.Contains(body, `name="csrf"`) {
@@ -79,171 +70,62 @@ func TestLoginPageRenders(t *testing.T) {
 	}
 }
 
-// TestFullFlow is a DB-backed integration test of the data layer, mirroring the
-// real user journey. It runs only when TEST_DATABASE_URL is set, e.g.:
-//
-//	TEST_DATABASE_URL="file::memory:?cache=shared" go test ./...
-func TestFullFlow(t *testing.T) {
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
-	}
-	ctx := context.Background()
-
-	pool, err := database.Connect(ctx, dsn)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	defer pool.Close()
-	if err := database.Migrate(ctx, pool); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
-	store := models.NewStore(pool)
-	stamp := time.Now().Format("150405.000000000")
-	email := "it-" + stamp + "@test.dev"
-	user, err := store.CreateUser(ctx, email, "fake-hash")
-	if err != nil {
-		t.Fatalf("create user: %v", err)
-	}
-
-	// Session round-trip.
-	tok := "tok-" + stamp
-	if err := store.CreateSession(ctx, tok, user.ID, time.Hour); err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	got, err := store.UserForSession(ctx, tok)
-	if err != nil || got.ID != user.ID {
-		t.Fatalf("UserForSession = (%v, %v), want user %d", got, err, user.ID)
-	}
-
-	// Books: create, list, update, stats.
-	b1, err := store.CreateBook(ctx, user.ID, "The Name of the Wind", "Patrick Rothfuss", models.StatusReading)
-	if err != nil {
-		t.Fatalf("create book 1: %v", err)
-	}
-	if _, err := store.CreateBook(ctx, user.ID, "Dune", "Frank Herbert", models.StatusFinished); err != nil {
-		t.Fatalf("create book 2: %v", err)
-	}
-	if err := store.UpdateBook(ctx, user.ID, b1.ID, "The Name of the Wind", "Patrick Rothfuss", models.StatusFinished, intPtr(5), strPtr("A masterpiece.")); err != nil {
-		t.Fatalf("update book: %v", err)
-	}
-
-	books, err := store.ListBooks(ctx, user.ID, models.BookFilter{})
-	if err != nil || len(books) != 2 {
-		t.Fatalf("ListBooks = %d books, err %v; want 2", len(books), err)
-	}
-	filtered, err := store.ListBooks(ctx, user.ID, models.BookFilter{Status: models.StatusFinished})
-	if err != nil || len(filtered) != 2 {
-		t.Fatalf("filtered list = %d, err %v; want 2 finished", len(filtered), err)
-	}
-	search, err := store.ListBooks(ctx, user.ID, models.BookFilter{Search: "dune"})
-	if err != nil || len(search) != 1 {
-		t.Fatalf("search = %d, err %v; want 1", len(search), err)
-	}
-
-	year := time.Now().Year()
-	stats, err := store.StatsFor(ctx, user.ID, year)
-	if err != nil {
-		t.Fatalf("stats: %v", err)
-	}
-	if stats.Total != 2 || stats.Finished != 2 || stats.FinishedYear != 2 {
-		t.Fatalf("stats = %+v, want total=2 finished=2 finishedYear=2", stats)
-	}
-
-	// Goal.
-	if err := store.UpsertGoal(ctx, user.ID, year, 12); err != nil {
-		t.Fatalf("upsert goal: %v", err)
-	}
-	stats, err = store.StatsFor(ctx, user.ID, year)
-	if err != nil || stats.Goal != 12 {
-		t.Fatalf("stats after goal = %+v, err %v; want goal 12", stats, err)
-	}
-	if stats.Progress() != 16 { // 2/12 = 16%
-		t.Fatalf("Progress = %d, want 16", stats.Progress())
-	}
-
-	// Delete.
-	if err := store.DeleteBook(ctx, user.ID, b1.ID); err != nil {
-		t.Fatalf("delete: %v", err)
-	}
-	if _, err := store.BookByID(ctx, user.ID, b1.ID); err != models.ErrNotFound {
-		t.Fatalf("BookByID after delete = %v, want ErrNotFound", err)
-	}
-}
-
-// TestRegisterCSFTSurvivesValidationError is a regression test for the register
-// form rejecting resubmits with "invalid CSRF token": after a validation error
-// the re-rendered form must keep the token in its hidden field, otherwise the
-// next submit no longer matches the cookie. The public-route flow never touches
-// the database, so the database is opened against an unreachable path.
-func TestRegisterCSFTSurvivesValidationError(t *testing.T) {
-	cfg := config.Load()
-	cfg.DatabaseURL = "file:/path-that-does-not-exist/pageturner.db?mode=ro"
-
-	db, err := sql.Open("sqlite", cfg.DatabaseURL)
-	if err != nil {
-		t.Fatalf("open database: %v", err)
-	}
-	defer db.Close()
-
-	srv := NewServer(cfg, models.NewStore(db), testLogger(), logs.NewHub(200))
-
-	// GET /register: the cookie and the form's hidden field must match.
-	get := httptest.NewRequest(http.MethodGet, "/register", nil)
+// TestHomeRenders verifies the public landing page renders without a database.
+func TestHomeRenders(t *testing.T) {
+	srv := testServerNoDB(t)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, get)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /register = %d, want 200", rec.Code)
-	}
-	token := csrfCookieFromResponse(t, rec)
-	if !strings.Contains(rec.Body.String(), `name="csrf" value="`+token+`"`) {
-		t.Fatalf("register form token %q does not match the csrf cookie", token)
-	}
+	srv.Handler().ServeHTTP(rec, req)
 
-	// POST with an invalid password: the error page must re-render the SAME token.
-	form := url.Values{"csrf": {token}, "email": {"reader@example.com"}, "password": {"short"}}
-	post := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(form.Encode()))
-	post.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	post.AddCookie(&http.Cookie{Name: "csrf", Value: token})
-	rec = httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, post)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("POST /register (bad password) = %d, want 200", rec.Code)
+		t.Fatalf("GET / = %d, want 200", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "Password must be at least 8 characters") {
-		t.Fatalf("expected password validation error, got: %s", rec.Body.String())
+	body := rec.Body.String()
+	if !strings.Contains(body, "Markitdown") {
+		t.Fatal("home page missing brand")
 	}
-	if !strings.Contains(rec.Body.String(), `name="csrf" value="`+token+`"`) {
-		t.Fatal("error re-render lost the CSRF token; the next submit would be rejected with 403")
-	}
-
-	// Resubmit with the same token (as the browser would after fixing the
-	// password): it must NOT be rejected as an invalid CSRF token. The store
-	// call fails here (unreachable database), which still exercises the full
-	// middleware chain.
-	form = url.Values{"csrf": {token}, "email": {"reader@example.com"}, "password": {"longenough123"}}
-	post = httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(form.Encode()))
-	post.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	post.AddCookie(&http.Cookie{Name: "csrf", Value: token})
-	rec = httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, post)
-	if rec.Code == http.StatusForbidden {
-		t.Fatal("resubmit after a validation error was rejected with 403 (CSRF token was lost)")
+	if !strings.Contains(body, "/markitdown") {
+		t.Fatal("home page missing converter link")
 	}
 }
 
-// csrfCookieFromResponse extracts the csrf cookie value from a recorded response.
-func csrfCookieFromResponse(t *testing.T, rec *httptest.ResponseRecorder) string {
-	t.Helper()
-	for _, c := range rec.Result().Cookies() {
-		if c.Name == "csrf" && c.Value != "" {
-			return c.Value
+// TestMarkitdownRequiresAuth verifies /markitdown redirects anonymous users.
+func TestMarkitdownRequiresAuth(t *testing.T) {
+	srv := testServerNoDB(t)
+	req := httptest.NewRequest(http.MethodGet, "/markitdown", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("GET /markitdown anonymous = %d, want 303 to /login", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/login" {
+		t.Fatalf("redirect = %q, want /login", loc)
+	}
+}
+
+// TestMarkitdownStreamRequiresAuth verifies the SSE endpoint rejects anonymous users.
+func TestMarkitdownStreamRequiresAuth(t *testing.T) {
+	srv := testServerNoDB(t)
+	req := httptest.NewRequest(http.MethodGet, "/markitdown/stream?text=hello", nil)
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /markitdown/stream anonymous = %d, want 401", rec.Code)
+	}
+}
+
+// TestDummyInvoiceMarkdown verifies the dummy extraction always yields an invoice doc.
+func TestDummyInvoiceMarkdown(t *testing.T) {
+	md := dummyInvoiceMarkdown("ACME billed Globex $10")
+	for _, want := range []string{"# INVOICE", "| Item |", "Total due"} {
+		if !strings.Contains(md, want) {
+			t.Fatalf("invoice markdown missing %q:\n%s", want, md)
 		}
 	}
-	t.Fatal("response did not set a csrf cookie")
-	return ""
+	if got := dummyInvoiceMarkdown(""); !strings.Contains(got, "# INVOICE") {
+		t.Fatal("empty input should still yield an invoice doc")
+	}
 }
-
-func intPtr(n int) *int       { return &n }
-func strPtr(s string) *string { return &s }

@@ -43,24 +43,15 @@ func NewServer(cfg config.Config, store *models.Store, log *slog.Logger, hub *lo
 func (s *Server) routes(mux *http.ServeMux) {
 	// Public
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("GET /{$}", s.handleHome)
 	mux.HandleFunc("GET /login", s.handleLoginGet)
 	mux.HandleFunc("POST /login", s.handleLoginPost)
-	mux.HandleFunc("GET /register", s.handleRegisterGet)
-	mux.HandleFunc("POST /register", s.handleRegisterPost)
 	mux.Handle("GET /static/", http.StripPrefix("/static/", staticFiles()))
 
 	// Authenticated
 	mux.HandleFunc("POST /logout", s.handleLogout)
-	mux.HandleFunc("GET /{$}", s.handleDashboard)
-	mux.HandleFunc("GET /books", s.handleBooks)
-	mux.HandleFunc("GET /books/search", s.handleBooksSearch)
-	mux.HandleFunc("POST /books", s.handleBookCreate)
-	mux.HandleFunc("GET /books/{id}/edit", s.handleBookEdit)
-	mux.HandleFunc("GET /books/{id}", s.handleBookView)
-	mux.HandleFunc("PUT /books/{id}", s.handleBookUpdate)
-	mux.HandleFunc("DELETE /books/{id}", s.handleBookDelete)
-	mux.HandleFunc("PATCH /books/{id}/status", s.handleBookStatus)
-	mux.HandleFunc("POST /goal", s.handleGoal)
+	mux.HandleFunc("GET /markitdown", s.handleMarkitdown)
+	mux.HandleFunc("GET /markitdown/stream", s.handleMarkitdownStream)
 	mux.HandleFunc("GET /logs/stream", s.handleLogStream)
 
 	// Wrap the whole router; the last middleware listed runs first, so the
