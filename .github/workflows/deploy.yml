@@ -1,0 +1,130 @@
+name: Deploy to HF Spaces
+
+# Mirrors the reference project (AgentDeck huggingface-service/.github/workflows/deploy.yml)
+# with one adaptation: the reference Python service parses a single ENV_FILE
+# secret at runtime via start.sh. This Go binary reads individual process env
+# vars (internal/config/config.go) and runs on distroless (no shell), so this
+# workflow FANS OUT the ENV_FILE doc into individual HF Space secrets.
+# Same operator UX: paste one doc into one GitHub Secret.
+#
+# Required GitHub Secrets (repo Settings > Secrets and variables > Actions):
+#   ENV_FILE  = verbatim content of .env.hf.example (see that file)
+#   HF_TOKEN  = Space write token, e.g. hf_... (from the Space URL / HF Settings > Access Tokens)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        space: ["Soumik-404/parseFlow"]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Resolve HF write token
+        id: token
+        env:
+          HF_TOKEN_SECRET: ${{ secrets.HF_TOKEN }}
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+        run: |
+          if [ -n "$HF_TOKEN_SECRET" ]; then
+            HF_VAL="$HF_TOKEN_SECRET"
+            echo "source=GitHub Secret HF_TOKEN"
+          else
+            # Fallback: HF_TOKEN= line embedded inside ENV_FILE (reference pattern)
+            HF_VAL=$(printf '%s' "$ENV_FILE" | grep -E '^HF_TOKEN=' | head -1 | cut -d= -f2- | tr -d '\r' | sed 's/^"//;s/"$//')
+            echo "source=ENV_FILE (HF_TOKEN= line)"
+          fi
+          if [ -z "$HF_VAL" ]; then echo "::error::No HF token found - set GitHub Secret HF_TOKEN (or add HF_TOKEN=hf_... to ENV_FILE)"; exit 1; fi
+          echo "::add-mask::$HF_VAL"
+          echo "hf_token=$HF_VAL" >> $GITHUB_OUTPUT
+          echo "✓ Resolved write token from $source for ${{ matrix.space }} (${#HF_VAL} chars)"
+
+      - name: Sync code to Space
+        env:
+          HF_TOKEN: ${{ steps.token.outputs.hf_token }}
+        run: |
+          echo "::group::📦 Sync code to ${{ matrix.space }}"
+          pip install -q -U huggingface_hub
+          set +e
+          hf upload "${{ matrix.space }}" . --repo-type space --exclude=".git*" --exclude=".github*" --exclude=".env*" --exclude="*.example" --delete="*" --commit-message="Deploy ${{ github.sha }}" 2>&1 | tee /tmp/hf_upload.log
+          UPLOAD_EXIT=${PIPESTATUS[0]}
+          cat /tmp/hf_upload.log
+          if [ $UPLOAD_EXIT -ne 0 ]; then echo "::error::hf upload failed"; exit 1; fi
+          echo "✓ Code sync done for ${{ matrix.space }} -> https://huggingface.co/spaces/${{ matrix.space }}/tree/main"
+          echo "::endgroup::"
+          echo "::notice::Code synced to ${{ matrix.space }}"
+
+      - name: Fan out ENV_FILE into individual Space secrets
+        env:
+          HF_TOKEN: ${{ steps.token.outputs.hf_token }}
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+        run: |
+          echo "::group::🔐 Sync env to ${{ matrix.space }}"
+          echo "Space: ${{ matrix.space }}"
+          echo "GitHub Secret ENV_FILE (${#ENV_FILE} chars) -> individual HF Space secrets (PORT, SESSION_SECRET, ...)"
+          python3 << 'PY'
+          import os, re
+          from huggingface_hub import HfApi
+          repo = "${{ matrix.space }}"
+          token = os.environ["HF_TOKEN"]
+          env_file = os.environ.get("ENV_FILE", "")
+          if not env_file.strip():
+              raise SystemExit("::error::GitHub Secret ENV_FILE is empty - paste .env.hf.example into it")
+          if "\\n" in env_file and "\n" not in env_file:
+              env_file = env_file.replace("\\n", "\n")
+          api = HfApi(token=token)
+          ok, skip, fail = 0, 0, []
+          for raw in env_file.splitlines():
+              line = raw.strip().removesuffix("\r")
+              if not line or line.startswith("#"):
+                  skip += 1
+                  continue
+              if line.startswith("export "):
+                  line = line[len("export "):].lstrip()
+              if "=" not in line:
+                  fail.append(line[:40])
+                  continue
+              key, val = line.split("=", 1)
+              key = key.strip()
+              val = val.strip()
+              if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+                  val = val[1:-1]
+              if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+                  fail.append(key[:40])
+                  continue
+              if key in ("HF_TOKEN", "DATABASE_URL_LOCAL"):
+                  print(f"SKIP: {key} (not a runtime secret)")
+                  skip += 1
+                  continue
+              api.add_space_secret(repo_id=repo, key=key, value=val)
+              print(f"OK: {key}")
+              ok += 1
+          print(f"Secrets sync summary: {ok} set, {skip} skipped, {len(fail)} failed")
+          if fail:
+              raise SystemExit(f"::error::Malformed lines: {fail}")
+          PY
+          echo "Verifying (names only)..."
+          hf spaces secrets ls "${{ matrix.space }}" 2>&1 | head -20 || echo "✗ list failed - check token scope"
+          echo "✓ Env sync done - check HF Space > Settings > Variables and secrets"
+          echo "::endgroup::"
+          echo "::notice::Env synced to ${{ matrix.space }}"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "::group::📊 Summary for ${{ matrix.space }}"
+          echo "✓ Code: synced via hf upload"
+          echo "✓ Env: ENV_FILE fanned out to individual Space secrets"
+          echo "→ View: https://huggingface.co/spaces/${{ matrix.space }}"
+          echo "→ App: https://soumik-404-parseflow.hf.space"
+          echo "→ Health: https://soumik-404-parseflow.hf.space/healthz"
+          echo "::endgroup::"

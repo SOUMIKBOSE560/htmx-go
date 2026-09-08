@@ -1,5 +1,6 @@
 bin/
 .env
+.env.hf.example
 *.exe
 *.test
 .DS_Store

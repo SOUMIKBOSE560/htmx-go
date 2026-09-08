@@ -1,0 +1,32 @@
+# Git
+.git
+.gitignore
+.github
+
+# Docs (README.md IS shipped - HF Space needs its frontmatter for sdk/port)
+*.md
+!README.md
+
+# Secrets (never ship - injected as HF Space secrets by deploy.yml)
+.env
+.env.local
+.env.*
+!.env.example
+!.env.hf.example
+
+# Build / local artifacts
+bin/
+*.exe
+*.test
+*.out
+
+# Runtime data (HF provides persistent /data - seeded at runtime, not baked)
+data/
+*.db
+*.sqlite3
+*.log
+
+# Dev-only, not needed in the image
+scripts/
+website/
+.DS_Store

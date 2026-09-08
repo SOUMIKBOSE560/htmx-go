@@ -1,0 +1,9 @@
+{
+  "_comment": "Single-space deploy. COMMON pattern (mirrors reference): paste .env.hf.example verbatim into GitHub Secret ENV_FILE; HF write token goes in GitHub Secret HF_TOKEN.",
+  "spaces": ["Soumik-404/parseFlow"],
+  "space_sdk": "docker",
+  "repo_type": "space",
+  "_docs": "GitHub Secret ENV_FILE (whole .env.hf.example doc) is fanned out by deploy.yml into INDIVIDUAL HF Space secrets (PORT, SESSION_SECRET, ...) because this Go binary reads process env vars directly (no start.sh ENV_FILE parser like the reference Python service). GitHub Secret HF_TOKEN is the Space write token (hf_...).",
+  "space_url": "https://huggingface.co/spaces/Soumik-404/parseFlow",
+  "public_url": "https://soumik-404-parseflow.hf.space"
+}

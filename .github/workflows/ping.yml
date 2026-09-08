@@ -1,0 +1,64 @@
+name: Ping Health Check (cron)
+
+# Keeps the HF Space warm and reports health.
+# This app exposes GET /healthz (public, no auth - see internal/web/server.go),
+# unlike the reference service which required a Bearer HF_TOKEN on /ping.
+
+on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'  # every 15 mins off-peak (avoids :00 high-load)
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        space: ["Soumik-404/parseFlow"]
+        url: ["https://soumik-404-parseflow.hf.space/healthz"]
+    steps:
+      - name: Ping /healthz
+        id: ping
+        run: |
+          URL="${{ matrix.url }}"
+          echo "→ Ping ${{ matrix.space }} via $URL"
+          START=$(date +%s)
+          HTTP_CODE=$(curl -s -o /tmp/body.json -w "%{http_code}" --max-time 15 "$URL" || echo "000")
+          END=$(date +%s)
+          LATENCY=$((END-START))
+          BODY=$(cat /tmp/body.json 2>/dev/null | head -c 300)
+          echo "http_code=$HTTP_CODE" >> $GITHUB_OUTPUT
+          echo "latency=$LATENCY" >> $GITHUB_OUTPUT
+          TS=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          echo "timestamp=$TS" >> $GITHUB_OUTPUT
+          echo "body=$BODY" >> $GITHUB_OUTPUT
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "status=✅ Healthy" >> $GITHUB_OUTPUT
+            echo "✓ ${{ matrix.space }} healthy (200) in ${LATENCY}s"
+          else
+            echo "status=❌ Unhealthy" >> $GITHUB_OUTPUT
+            echo "✗ ${{ matrix.space }} unhealthy ($HTTP_CODE) Body: $BODY"
+          fi
+          if [ "$HTTP_CODE" = "200" ]; then echo "✓ SUCCESS: /healthz 200"; else echo "✗ ERROR: /healthz $HTTP_CODE"; fi
+
+      - name: Audit table
+        if: always()
+        run: |
+          echo "::group::📊 Ping Audit for ${{ matrix.space }}"
+          {
+            echo "## Ping Audit - $(date -u +"%Y-%m-%d %H:%M UTC")"
+            echo ""
+            echo "| Space | URL | Status | Code | Latency | Timestamp |"
+            echo "|---|---|---|---|---|---|"
+            echo "| ${{ matrix.space }} | ${{ matrix.url }} | ${{ steps.ping.outputs.status }} | \`${{ steps.ping.outputs.http_code }}\` | ${{ steps.ping.outputs.latency }}s | ${{ steps.ping.outputs.timestamp }} |"
+            echo ""
+            echo "**Body:** \`${{ steps.ping.outputs.body }}\`"
+          } >> $GITHUB_STEP_SUMMARY
+          cat $GITHUB_STEP_SUMMARY
+          echo "::endgroup::"
+          if [ "${{ steps.ping.outputs.http_code }}" != "200" ]; then
+            echo "::warning::✗ Ping failed for ${{ matrix.space }}: ${{ steps.ping.outputs.http_code }}"
+          else
+            echo "::notice::✓ Ping healthy for ${{ matrix.space }}"
+          fi

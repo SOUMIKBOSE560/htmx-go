@@ -16,6 +16,11 @@ RUN mkdir /data
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/markitdown /markitdown
 COPY --from=build --chown=nonroot:nonroot /data /data
-EXPOSE 8909
+# Hugging Face Spaces (Docker SDK) requires the container to listen on 7860.
+# These are defaults only: HF Space secrets and `docker run --env-file .env`
+# override them (local .env uses PORT=8909).
+ENV PORT=7860
+ENV DATABASE_URL=file:/data/markitdown.db?_busy_timeout=5000&_foreign_keys=on
+EXPOSE 7860
 USER nonroot:nonroot
 ENTRYPOINT ["/markitdown"]

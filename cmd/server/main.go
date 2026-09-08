@@ -16,6 +16,7 @@ import (
 	"pageturner/internal/database"
 	"pageturner/internal/logs"
 	"pageturner/internal/models"
+	"pageturner/internal/selfping"
 	"pageturner/internal/web"
 )
 
@@ -65,12 +66,23 @@ func main() {
 		}
 	}()
 
+	// Optional keep-warm scheduler for platforms that sleep on inactivity
+	// (e.g. Hugging Face Spaces): GETs the public URL every SELF_PING_INTERVAL.
+	// It stops as part of graceful shutdown below.
+	pingCtx, stopPing := context.WithCancel(context.Background())
+	if cfg.SelfPingEnabled && cfg.SelfPingURL != "" {
+		go selfping.Run(pingCtx, log, cfg.SelfPingURL, cfg.SelfPingEvery)
+	} else if cfg.SelfPingEnabled {
+		log.Warn("self-ping enabled but SELF_PING_URL is empty; scheduler not started")
+	}
+
 	// Graceful shutdown on Ctrl-C / SIGTERM.
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
 
 	log.Info("shutting down")
+	stopPing()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
