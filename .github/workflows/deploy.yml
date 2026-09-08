@@ -7,9 +7,10 @@ name: Deploy to HF Spaces
 # workflow FANS OUT the ENV_FILE doc into individual HF Space secrets.
 # Same operator UX: paste one doc into one GitHub Secret.
 #
-# Required GitHub Secrets (repo Settings > Secrets and variables > Actions):
-#   ENV_FILE  = verbatim content of .env.hf.example (see that file)
-#   HF_TOKEN  = Space write token, e.g. hf_... (from the Space URL / HF Settings > Access Tokens)
+# Required GitHub Secret (repo Settings > Secrets and variables > Actions):
+#   ENV_FILE  = verbatim content of .env.hf.example BELOW its PASTE line,
+#               INCLUDING the HF_TOKEN= line (used for auth, never synced).
+# Optional override: a separate HF_TOKEN secret wins over the embedded line.
 
 on:
   push:
@@ -35,15 +36,20 @@ jobs:
           HF_TOKEN_SECRET: ${{ secrets.HF_TOKEN }}
           ENV_FILE: ${{ secrets.ENV_FILE }}
         run: |
+          echo "diagnostics (lengths only, values never logged): HF_TOKEN secret=${#HF_TOKEN_SECRET} chars, ENV_FILE secret=${#ENV_FILE} chars"
           if [ -n "$HF_TOKEN_SECRET" ]; then
             HF_VAL="$HF_TOKEN_SECRET"
             echo "source=GitHub Secret HF_TOKEN"
           else
-            # Fallback: HF_TOKEN= line embedded inside ENV_FILE (reference pattern)
-            HF_VAL=$(printf '%s' "$ENV_FILE" | grep -E '^HF_TOKEN=' | head -1 | cut -d= -f2- | tr -d '\r' | sed 's/^"//;s/"$//')
+            # Fallback: HF_TOKEN= line embedded inside ENV_FILE (tolerates
+            # leading 'export ', CRLF endings and surrounding quotes)
+            HF_VAL=$(printf '%s' "$ENV_FILE" | grep -E '^(export )?HF_TOKEN=' | head -1 | sed -E 's/^(export )?HF_TOKEN=//' | tr -d '\r' | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")
             echo "source=ENV_FILE (HF_TOKEN= line)"
           fi
-          if [ -z "$HF_VAL" ]; then echo "::error::No HF token found - set GitHub Secret HF_TOKEN (or add HF_TOKEN=hf_... to ENV_FILE)"; exit 1; fi
+          if [ -z "$HF_VAL" ]; then
+            echo "::error::No HF token found. Fix ONE of: (a) create GitHub Secret HF_TOKEN=hf_... (repo Settings > Secrets and variables > Actions), or (b) paste .env.hf.example INCLUDING its HF_TOKEN= line into GitHub Secret ENV_FILE. Current state: HF_TOKEN secret is empty and ENV_FILE has no HF_TOKEN= line."
+            exit 1
+          fi
           echo "::add-mask::$HF_VAL"
           echo "hf_token=$HF_VAL" >> $GITHUB_OUTPUT
           echo "✓ Resolved write token from $source for ${{ matrix.space }} (${#HF_VAL} chars)"
